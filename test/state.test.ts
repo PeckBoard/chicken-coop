@@ -2,13 +2,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   buildState,
   classifyTool,
+  kindForSession,
   parseTs,
   phaseForCard,
   resetStateCache,
+  SESSION_STALE_MS,
   TERMINAL_LINGER_MS,
+  type Bird,
   type HostPort,
 } from "../src/state";
-import type { Card, SlimEvent } from "../src/host";
+import type { Card, SessionBrief, SlimEvent } from "../src/host";
 
 const NOW = Date.parse("2026-07-23T12:00:00Z");
 
@@ -27,12 +30,31 @@ function card(over: Partial<Card>): Card {
   };
 }
 
+function sb(over: Partial<SessionBrief>): SessionBrief {
+  return {
+    session_id: "x",
+    name: "x",
+    is_worker: false,
+    is_expert: false,
+    expert_kind: null,
+    card_id: null,
+    project_id: null,
+    parent_session_id: null,
+    is_temp: false,
+    repeating_task_id: null,
+    last_activity: "2026-07-23T11:59:00Z",
+    subagent_completed_at: null,
+    ...over,
+  };
+}
+
 function port(
   cards: Card[],
   tails: Record<string, SlimEvent[]>,
+  sessions?: SessionBrief[],
 ): HostPort & { seen: number[] } {
   const seen: number[] = [];
-  return {
+  const p: HostPort & { seen: number[] } = {
     seen,
     listCards: () => cards,
     listProjects: () => [{ id: "p1", name: "Farm" }],
@@ -45,6 +67,19 @@ function port(
       };
     },
   };
+  if (sessions) p.listSessionsBrief = () => sessions;
+  return p;
+}
+
+function byId(birds: Bird[], id: string): Bird {
+  const b = birds.find((x) => x.id === id);
+  if (!b) throw new Error(`no bird ${id}: ${birds.map((x) => x.id)}`);
+  return b;
+}
+
+/// last_activity string for an age in ms before NOW.
+function ago(ms: number): string {
+  return new Date(NOW - ms).toISOString();
 }
 
 beforeEach(() => resetStateCache());
@@ -99,7 +134,21 @@ describe("phaseForCard", () => {
   });
 });
 
-describe("buildState", () => {
+describe("kindForSession", () => {
+  it("maps session flags to breeds", () => {
+    expect(kindForSession(sb({}))).toBe("rooster");
+    expect(kindForSession(sb({ is_expert: true, expert_kind: "pm" }))).toBe(
+      "rooster",
+    );
+    expect(kindForSession(sb({ is_temp: true }))).toBe("bantam");
+    expect(kindForSession(sb({ repeating_task_id: "rt1" }))).toBe("barred");
+    expect(
+      kindForSession(sb({ expert_kind: "subagent", parent_session_id: "s1" })),
+    ).toBe("chick");
+  });
+});
+
+describe("buildState — card hens", () => {
   it("counts tool events across polls with a per-session cursor", () => {
     const tails: Record<string, SlimEvent[]> = {
       s1: [
@@ -111,8 +160,10 @@ describe("buildState", () => {
     const p = port([card({})], tails);
 
     let state = buildState(p, NOW);
-    expect(state.chickens).toHaveLength(1);
-    expect(state.chickens[0]).toMatchObject({
+    expect(state.birds).toHaveLength(1);
+    expect(state.birds[0]).toMatchObject({
+      id: "c1",
+      kind: "hen",
       card_id: "c1",
       project_name: "Farm",
       phase: "working",
@@ -126,21 +177,21 @@ describe("buildState", () => {
     tails.s1.push({ seq: 4, kind: "agent-tool-start", name: "Edit" });
     state = buildState(p, NOW);
     expect(p.seen).toEqual([0, 3]); // second poll tailed after seq 3
-    expect(state.chickens[0].activity).toBe(2);
-    expect(state.chickens[0].tool_class).toBe("edit");
+    expect(state.birds[0].activity).toBe(2);
+    expect(state.birds[0].tool_class).toBe("edit");
 
     // Nothing new: count stays.
     state = buildState(p, NOW);
-    expect(state.chickens[0].activity).toBe(2);
+    expect(state.birds[0].activity).toBe(2);
   });
 
   it("drops cards that leave the roster and GCs their activity", () => {
     const tails = { s1: [{ seq: 1, kind: "agent-tool-start", name: "Bash" }] };
     const p = port([card({})], tails);
-    expect(buildState(p, NOW).chickens).toHaveLength(1);
+    expect(buildState(p, NOW).birds).toHaveLength(1);
 
     const gone = port([], tails);
-    expect(buildState(gone, NOW).chickens).toHaveLength(0);
+    expect(buildState(gone, NOW).birds).toHaveLength(0);
   });
 
   it("uses last_worker_session_id between worker chunks", () => {
@@ -150,19 +201,22 @@ describe("buildState", () => {
       tails,
     );
     const state = buildState(p, NOW);
-    expect(state.chickens[0]).toMatchObject({
+    expect(state.birds[0]).toMatchObject({
       activity: 1,
       tool_class: "read",
       busy: false,
     });
   });
 
-  it("attaches the oldest unresolved question and tolerates a missing host fn", () => {
-    const tails = { s1: [] as SlimEvent[] };
+  it("attaches a question only when the tail saw one pending, and tolerates a missing host fn", () => {
+    const tails: Record<string, SlimEvent[]> = {
+      s1: [{ seq: 1, kind: "question", name: null }],
+    };
     const p = port([card({})], tails);
 
-    // Port without sessionQuestions (older core): no alert, no crash.
-    expect(buildState(p, NOW).chickens[0].question).toBeNull();
+    // Port without sessionQuestions (older core): no alert, no crash — but
+    // the tail still counted the pending question.
+    expect(buildState(p, NOW).birds[0].question).toBeNull();
 
     const qData = {
       questions: [
@@ -179,13 +233,13 @@ describe("buildState", () => {
       sessionQuestions: (sid) =>
         sid === "s1" ? [{ id: "q-1", data: qData }] : [],
     };
-    const chick = buildState(withQ, NOW).chickens[0];
-    expect(chick.question).toEqual({
+    const hen = buildState(withQ, NOW).birds[0];
+    expect(hen.question).toEqual({
       id: "q-1",
       session_id: "s1",
       data: qData,
     });
-    expect(chick.session_id).toBe("s1");
+    expect(hen.session_id).toBe("s1");
 
     // A throwing host fn degrades to no alert.
     const throwing: HostPort = {
@@ -194,6 +248,180 @@ describe("buildState", () => {
         throw new Error("plugin lacks the 'worker_questions' permission");
       },
     };
-    expect(buildState(throwing, NOW).chickens[0].question).toBeNull();
+    expect(buildState(throwing, NOW).birds[0].question).toBeNull();
+
+    // Once the tail sees the resolution, the fetch stops firing entirely.
+    tails.s1.push({ seq: 2, kind: "question-resolved", name: null });
+    let fetches = 0;
+    const counting: HostPort = {
+      ...p,
+      sessionQuestions: () => {
+        fetches += 1;
+        return [];
+      },
+    };
+    expect(buildState(counting, NOW).birds[0].question).toBeNull();
+    expect(fetches).toBe(0);
+  });
+});
+
+describe("buildState — session birds", () => {
+  it("spawns breeds per session kind and skips workers (hens cover them)", () => {
+    const sessions = [
+      sb({ session_id: "s1", name: "worker", is_worker: true }),
+      sb({ session_id: "chat", name: "Morning chat" }),
+      sb({ session_id: "cron", name: "Nightly", repeating_task_id: "rt1" }),
+      sb({ session_id: "tmp", name: "research", is_temp: true }),
+    ];
+    const p = port([card({})], {}, sessions);
+    const { birds } = buildState(p, NOW);
+    expect(birds.map((b) => b.id).sort()).toEqual([
+      "c1",
+      "chat",
+      "cron",
+      "tmp",
+    ]);
+    expect(byId(birds, "chat")).toMatchObject({
+      kind: "rooster",
+      phase: "working",
+      title: "Morning chat",
+      step: null,
+    });
+    expect(byId(birds, "cron").kind).toBe("barred");
+    expect(byId(birds, "tmp").kind).toBe("bantam");
+  });
+
+  it("walks stale sessions home, then despawns them", () => {
+    const fresh = port([], {}, [
+      sb({ session_id: "chat", last_activity: ago(SESSION_STALE_MS - 5000) }),
+    ]);
+    expect(buildState(fresh, NOW).birds[0].phase).toBe("working");
+
+    const stale = port([], {}, [
+      sb({ session_id: "chat", last_activity: ago(SESSION_STALE_MS + 5000) }),
+    ]);
+    expect(buildState(stale, NOW).birds[0].phase).toBe("done");
+
+    const asleep = port([], {}, [
+      sb({
+        session_id: "chat",
+        last_activity: ago(SESSION_STALE_MS + TERMINAL_LINGER_MS + 5000),
+      }),
+    ]);
+    expect(buildState(asleep, NOW).birds).toHaveLength(0);
+  });
+
+  it("keeps a stale session out while a question is pending", () => {
+    const tails: Record<string, SlimEvent[]> = {
+      chat: [{ seq: 1, kind: "question", name: null }],
+    };
+    const p = port([], tails, [
+      sb({
+        session_id: "chat",
+        last_activity: ago(SESSION_STALE_MS + TERMINAL_LINGER_MS + 5000),
+      }),
+    ]);
+    // Within the horizon but far past stale: the pending question holds it.
+    const { birds } = buildState(p, NOW);
+    expect(birds).toHaveLength(1);
+    expect(birds[0].phase).toBe("working");
+  });
+});
+
+describe("buildState — chicks", () => {
+  it("gives a chick its parent's breed and roster id (card hen parent)", () => {
+    const sessions = [
+      sb({ session_id: "s1", name: "worker", is_worker: true }),
+      sb({
+        session_id: "sub1",
+        name: "sub: recon",
+        is_expert: true,
+        expert_kind: "subagent",
+        parent_session_id: "s1",
+      }),
+    ];
+    const p = port([card({})], {}, sessions);
+    const chick = byId(buildState(p, NOW).birds, "sub1");
+    expect(chick).toMatchObject({
+      kind: "chick",
+      chick_kind: "hen",
+      parent_id: "c1", // the hen's roster id is the CARD id
+      phase: "working",
+      title: "sub: recon",
+    });
+  });
+
+  it("follows a chat parent and keeps that parent alive past staleness", () => {
+    const sessions = [
+      sb({
+        session_id: "chat",
+        name: "Morning chat",
+        last_activity: ago(SESSION_STALE_MS + TERMINAL_LINGER_MS + 60_000),
+      }),
+      sb({
+        session_id: "sub1",
+        expert_kind: "subagent",
+        parent_session_id: "chat",
+      }),
+    ];
+    const p = port([], {}, sessions);
+    const { birds } = buildState(p, NOW);
+    const parent = byId(birds, "chat");
+    expect(parent.phase).toBe("working"); // live chick pins the parent out
+    const chick = byId(birds, "sub1");
+    expect(chick.chick_kind).toBe("rooster");
+    expect(chick.parent_id).toBe("chat");
+  });
+
+  it("orphans a chick whose parent despawned, lingers on completion, then despawns", () => {
+    const orphan = port([], {}, [
+      sb({
+        session_id: "sub1",
+        expert_kind: "subagent",
+        parent_session_id: "gone",
+      }),
+    ]);
+    const b = buildState(orphan, NOW).birds[0];
+    expect(b.parent_id).toBeNull();
+    expect(b.chick_kind).toBe("hen"); // unknown parent defaults to hen
+
+    const doneRecent = port([], {}, [
+      sb({
+        session_id: "sub1",
+        expert_kind: "subagent",
+        parent_session_id: "gone",
+        subagent_completed_at: ago(TERMINAL_LINGER_MS - 5000),
+      }),
+    ]);
+    expect(buildState(doneRecent, NOW).birds[0].phase).toBe("done");
+
+    const doneOld = port([], {}, [
+      sb({
+        session_id: "sub1",
+        expert_kind: "subagent",
+        parent_session_id: "gone",
+        subagent_completed_at: ago(TERMINAL_LINGER_MS + 5000),
+      }),
+    ]);
+    expect(buildState(doneOld, NOW).birds).toHaveLength(0);
+  });
+});
+
+describe("buildState — degraded ports", () => {
+  it("builds card hens only without listSessionsBrief, or when it throws", () => {
+    const p = port([card({})], {});
+    const { birds } = buildState(p, NOW);
+    expect(birds).toHaveLength(1);
+    expect(birds[0].kind).toBe("hen");
+
+    const throwing: HostPort = {
+      ...port([card({})], {}),
+      listSessionsBrief: () => {
+        throw new Error("unknown host function");
+      },
+    };
+    const state = buildState(throwing, NOW);
+    expect(state.birds).toHaveLength(1);
+    expect(state.birds[0].kind).toBe("hen");
   });
 });

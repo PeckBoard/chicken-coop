@@ -1,8 +1,8 @@
 {
   "name": "peckboard-chicken-coop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "PeckBoard plugin: a 3D chicken run visualizing the cards being worked on — one hen per active card.",
+  "description": "PeckBoard plugin: a 3D chicken run visualizing every live session as a bird — hens for cards, a rooster for chats, a barred hen for repeating tasks, a bantam for temp sessions, chicks for subagents.",
   "scripts": {
     "bundle": "node esbuild.js",
     "build": "node esbuild.js && extism-js dist/index.js -i src/index.d.ts -o dist/plugin.wasm",

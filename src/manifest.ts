@@ -4,10 +4,12 @@
 export function manifestJson(): string {
   return JSON.stringify({
     description:
-      "A 3D chicken run visualizing the cards being worked on: one hen per active card — " +
-      "out of the coop while working, pecking on tool activity, nesting during testing, " +
-      "back into the coop when the card is done.",
-    version: "0.2.0",
+      "A 3D chicken run visualizing every live session as a bird: hens for cards, " +
+      "a rooster for chats, a barred hen for repeating tasks, a bantam for temp " +
+      "sessions, and chicks that follow their parent bird for subagents — pecking " +
+      "on tool activity, nesting during testing, raising an alert badge when a " +
+      "worker asks a question.",
+    version: "0.3.0",
     repository: "https://github.com/PeckBoard/chicken-coop",
     hooks: ["http.request.before", "http.request.authed"],
     sidebar_items: [

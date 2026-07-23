@@ -97,3 +97,25 @@ export function answerQuestion(
     rejected,
   });
 }
+
+/// A session row from `peckboard_list_sessions_brief` (core ≥ 0.0.132) —
+/// kind flags and lineage only, no conversation/model/prompt content.
+export interface SessionBrief {
+  session_id: string;
+  name: string;
+  is_worker: boolean;
+  is_expert: boolean;
+  expert_kind: string | null;
+  card_id: string | null;
+  project_id: string | null;
+  parent_session_id: string | null;
+  is_temp: boolean;
+  repeating_task_id: string | null;
+  last_activity: string;
+  subagent_completed_at: string | null;
+}
+
+export function listSessionsBrief(): SessionBrief[] {
+  const res = hostCall("peckboard_list_sessions_brief", {});
+  return Array.isArray(res?.sessions) ? res.sessions : [];
+}

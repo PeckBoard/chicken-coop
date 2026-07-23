@@ -8,6 +8,7 @@ import {
   answerQuestion,
   listCards,
   listProjects,
+  listSessionsBrief,
   sessionEvents,
   sessionQuestions,
 } from "./host";
@@ -43,11 +44,19 @@ export function serveAuthed(payload: any): string {
 
   try {
     if (method === "GET" && path === STATE_PATH) {
-      const state = buildState(
-        { listCards, listProjects, sessionEvents, sessionQuestions },
-        Date.now(),
-      );
-      return jsonResponse(200, state);
+      if (method === "GET" && path === STATE_PATH) {
+        const state = buildState(
+          {
+            listCards,
+            listProjects,
+            sessionEvents,
+            sessionQuestions,
+            listSessionsBrief,
+          },
+          Date.now(),
+        );
+        return jsonResponse(200, state);
+      }
     }
     if (method === "POST" && path === ANSWER_PATH) {
       let body: any = null;

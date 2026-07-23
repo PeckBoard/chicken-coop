@@ -1,11 +1,19 @@
 # Chicken Coop
 
-A PeckBoard plugin that turns the board's work-in-progress into a 3D chicken
-run: one low-poly hen per card being worked on. A hen leaves the coop when its
-card starts, wanders the run and pecks at the grass as its worker runs
-commands and edits files, sits on a nest while the card is in a testing step
-(e.g. `review`), and walks back into the coop — and disappears — when the card
-lands on `done` / `wont_do`.
+A PeckBoard plugin that turns the instance's work-in-progress into a 3D
+chicken run: one bird per live session, breed by session kind.
+
+| Session kind                    | Bird                                                                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Card worker                     | **Hen** — leaves the coop when the card starts, pecks on tool activity, nests during testing steps, walks home on done/wont_do                 |
+| Chat (and non-subagent experts) | **Rooster** — tall comb, green-black sickle tail                                                                                               |
+| Repeating task                  | **Barred hen** — gray/white barred plumage                                                                                                     |
+| Temp (pre-hatcher)              | **Bantam** — small and pale                                                                                                                    |
+| Subagent                        | **Chick** — a baby in its parent's palette that follows the parent bird; when the subagent completes it runs to the parent, hops, and vanishes |
+
+Non-card birds despawn by walking home once their session has been idle for
+10 minutes (a pending question or a live chick keeps them out); chicks live
+exactly as long as `subagent_completed_at` is unset.
 
 ## How It Works
 
@@ -14,10 +22,15 @@ lands on `done` / `wont_do`.
   sandboxed plugin iframe; opened standalone it renders a demo roster.
 - **State** (`GET /api/plugin-ui/chicken-coop/state`, authed): polled once a
   second through the parent fetch bridge. The plugin derives it live:
-  - roster: `peckboard_list_cards` — every card whose step is neither
+  - card hens: `peckboard_list_cards` — every card whose step is neither
     backlog/todo nor terminal gets a hen (`in_progress` → working, any other
     non-terminal step → testing). Done/wont-do cards linger for 2 minutes so
     the walk-home animation can play.
+  - session birds: `peckboard_list_sessions_brief` (`session_read`, core ≥
+    0.0.132) — a slim enumeration (kind flags, lineage, `last_activity`,
+    `subagent_completed_at`; no conversation/model/prompt content) drives
+    the rooster/barred/bantam/chick roster. On older cores the fn is absent
+    and the coop degrades to card hens only.
   - activity: `peckboard_session_events` (slim event tail, `session_read`)
     on each card's worker session; `agent-tool-start` events increment a
     per-card counter, classified into peck styles (command / edit / read /
@@ -39,7 +52,8 @@ used by Playwright e2e.
 
 Requires a PeckBoard with the `peckboard_session_events` host function; the
 question alert/answer flow additionally needs `peckboard_session_questions` /
-`peckboard_answer_question` (and the `worker_questions` permission grant).
+`peckboard_answer_question` (`worker_questions` grant), and the full
+every-session roster needs `peckboard_list_sessions_brief` (core ≥ 0.0.132).
 
 ## Development
 
@@ -47,6 +61,14 @@ question alert/answer flow additionally needs `peckboard_session_questions` /
 ./build.sh              # npm install (first run) + two-stage bundle + extism-js
 npm test                # vitest for the state derivation
 ```
+
+The standalone demo (`npm run demo`, open `.demo/coop-demo.html`) shows every
+breed plus chicks. Query params for browser-driven verification:
+`?focus=<bird id>` frames one bird close up (family stays visible, strangers
+hide), `&yaw=<radians>` poses it at a fixed heading in the open field, and
+`?err=1` throws a probe error — uncaught errors render into a visible
+`#coop-errors` box (`data-count` attribute) since the harness can't read the
+console.
 
 The build is two-stage: `page/main.js` (+ three.js) is bundled/minified first
 and embedded as a JSON-escaped string in `src/generated/pageBundle.ts`, then

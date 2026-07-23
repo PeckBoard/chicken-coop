@@ -80,6 +80,82 @@ function mulberry32(seed) {
 
 const PLUMAGE = [0xf2ead8, 0xa5692e, 0xc17a3f, 0x40392f, 0xd9b36c, 0xe8e2e0];
 
+// Breed looks per session kind. Chicks reuse the parent breed's palette,
+// tinted toward down-yellow.
+const BREED_STYLE = {
+  hen: { palettes: PLUMAGE, variant: "plain", scale: [0.9, 1.15] },
+  rooster: {
+    palettes: [0x8a3b1e, 0x6e2f18, 0x9c4a24],
+    variant: "plain",
+    scale: [1.14, 1.3],
+  },
+  barred: {
+    palettes: [0x9a9a9a, 0x8b8b90],
+    variant: "barred",
+    scale: [0.9, 1.1],
+  },
+  bantam: {
+    palettes: [0xf2ead8, 0xe9e2cf],
+    variant: "plain",
+    scale: [0.68, 0.78],
+  },
+};
+const KIND_LABEL = {
+  hen: "card",
+  rooster: "chat",
+  barred: "repeating task",
+  bantam: "temp session",
+  chick: "subagent",
+};
+
+/// Blend a plumage color toward chick-down yellow.
+function chickTint(hex) {
+  const c = new Color(hex);
+  c.lerp(new Color(0xf7d867), 0.62);
+  return c.getHex();
+}
+
+// Uncaught errors land in a DOM node so browser-driven tests can assert
+// "no errors" without console access. The node exists from load with
+// data-count="0".
+window.__coopErrors = [];
+const errorsEl = (() => {
+  const n = document.createElement("div");
+  n.id = "coop-errors";
+  n.setAttribute("data-testid", "coop-errors");
+  n.setAttribute("data-count", "0");
+  n.style.display = "none";
+  document.body.appendChild(n);
+  return n;
+})();
+function noteError(msg) {
+  window.__coopErrors.push(String(msg));
+  errorsEl.textContent = window.__coopErrors.join("\n");
+  errorsEl.setAttribute("data-count", String(window.__coopErrors.length));
+  // Surface visibly so screenshots and outlines catch it (hidden when clean).
+  errorsEl.style.cssText =
+    "display:block;position:fixed;left:8px;bottom:8px;max-width:60ch;" +
+    "background:#7a1f1f;color:#ffe9e9;font:12px/1.4 monospace;" +
+    "padding:6px 10px;border-radius:6px;white-space:pre-wrap;z-index:99;";
+}
+window.addEventListener("error", (e) => noteError(e.message || e.type));
+window.addEventListener("unhandledrejection", (e) =>
+  noteError(
+    (e.reason && (e.reason.stack || e.reason.message)) || "unhandledrejection",
+  ),
+);
+// ?err=1: throw a probe error after load so tests can verify the capture
+// plumbing end-to-end (the box must appear with data-count="1").
+try {
+  if (new URLSearchParams(location.search).get("err") === "1") {
+    setTimeout(() => {
+      throw new Error("demo error probe");
+    }, 500);
+  }
+} catch (e) {
+  /* URLSearchParams unavailable: skip the probe */
+}
+
 // ── Scene setup (guarded: headless fallback keeps state + mirror alive) ──
 
 let renderer = null;
@@ -372,9 +448,18 @@ function drawStraw(ctx, w, h, rnd) {
 }
 
 // Soft scalloped feather rows, tinted around the plumage color.
-function drawFeathers(ctx, w, h, plumage, rnd) {
+function drawFeathers(ctx, w, h, plumage, rnd, variant) {
   ctx.fillStyle = cssHex(plumage);
   ctx.fillRect(0, 0, w, h);
+  if (variant === "barred") {
+    // Plymouth-Rock barring: alternating soft light/dark bands under the
+    // scallops.
+    const bands = 8;
+    for (let i = 0; i < bands; i++) {
+      ctx.fillStyle = i % 2 ? "rgba(246,244,238,0.55)" : "rgba(38,38,44,0.45)";
+      ctx.fillRect(0, (i * h) / bands, w, h / bands / 1.55);
+    }
+  }
   const rows = 6;
   const cols = 6;
   const rh = h / rows;
@@ -792,20 +877,22 @@ function buildNest() {
 
 // ── Chicken model ─────────────────────────────────────────────────────
 //
-// Rounded hen out of ellipsoids with a speckled feather texture. The
-// returned handles and pivot semantics are the animation contract used by
-// Chicken.update(): neckG.rotation.x dips the head to peck, wing rotation.z
-// lifts the wings, legs swing rotation.x at the hip, legs hide when nesting.
+// Rounded birds out of ellipsoids with feather textures, parameterized by
+// breed (session kind). The returned handles and pivot semantics are the
+// animation contract used by Chicken.update(): neckG.rotation.x dips the
+// head to peck, wing rotation.z lifts the wings, legs swing rotation.x at
+// the hip, legs hide when nesting. Every breed returns the same handles.
 
 const FEATHER_CACHE = new Map();
-function featherMats(plumage) {
-  let mats = FEATHER_CACHE.get(plumage);
+function featherMats(plumage, variant) {
+  const key = plumage + "|" + (variant || "plain");
+  let mats = FEATHER_CACHE.get(key);
   if (!mats) {
-    const rnd = mulberry32(plumage);
+    const rnd = mulberry32(plumage ^ (variant === "barred" ? 0x9e37 : 0));
     const tex = makeTexture(
       96,
       96,
-      (c, w, h) => drawFeathers(c, w, h, plumage, rnd),
+      (c, w, h) => drawFeathers(c, w, h, plumage, rnd, variant),
       2,
       2,
     );
@@ -814,14 +901,19 @@ function featherMats(plumage) {
       light: lambert(shadeHex(plumage, 30)),
       dark: lambert(shadeHex(plumage, -42)),
     };
-    FEATHER_CACHE.set(plumage, mats);
+    FEATHER_CACHE.set(key, mats);
   }
   return mats;
 }
 
-function buildChickenMesh(seedRnd) {
-  const plumage = PLUMAGE[Math.floor(seedRnd() * PLUMAGE.length)];
-  const M = featherMats(plumage);
+function buildBirdMesh(seedRnd, kind, chickKind) {
+  const isChick = kind === "chick";
+  const styleKind = isChick ? chickKind || "hen" : kind || "hen";
+  const style = BREED_STYLE[styleKind] || BREED_STYLE.hen;
+  let plumage = style.palettes[Math.floor(seedRnd() * style.palettes.length)];
+  if (isChick) plumage = chickTint(plumage);
+  // Chick down is fluffy, not barred — the tinted palette carries the lineage.
+  const M = featherMats(plumage, isChick ? "plain" : style.variant);
   const legMat = lambert(0xe8a33d);
   const combMat = lambert(0xd8402a);
   const root = new Group();
@@ -834,10 +926,16 @@ function buildChickenMesh(seedRnd) {
   };
 
   const bodyG = new Group();
-  bodyG.position.y = 0.58;
+  bodyG.position.y = isChick ? 0.5 : 0.58;
   root.add(bodyG);
 
-  const body = orb(0.42, M.base, 0.82, 0.8, 1.16);
+  const body = orb(
+    0.42,
+    M.base,
+    0.82,
+    isChick ? 0.86 : 0.8,
+    isChick ? 1.0 : 1.16,
+  );
   body.rotation.x = 0.1;
   bodyG.add(body);
   const chest = orb(0.3, M.light, 0.72, 0.85, 0.66);
@@ -847,17 +945,68 @@ function buildChickenMesh(seedRnd) {
   rump.position.set(0, 0.14, -0.3);
   bodyG.add(rump);
 
-  // Tail: five fanned feathers, outer pair darker.
-  const tailG = new Group();
-  tailG.position.set(0, 0.26, -0.44);
-  tailG.rotation.x = -0.85;
-  bodyG.add(tailG);
-  for (let i = -2; i <= 2; i++) {
-    const f = orb(0.3, Math.abs(i) === 2 ? M.dark : M.base, 0.14, 1.05, 0.3);
-    f.position.set(i * 0.075, 0.26, -Math.abs(i) * 0.02);
-    f.rotation.z = i * 0.3;
-    f.rotation.x = -Math.abs(i) * 0.1;
-    tailG.add(f);
+  if (isChick) {
+    // Tail: a single down puff.
+    const puff = orb(0.16, M.light, 1, 0.9, 0.8);
+    puff.position.set(0, 0.16, -0.42);
+    bodyG.add(puff);
+  } else if (kind === "rooster") {
+    // Tail: green-black sickles fanned FRONT-TO-BACK from a common quill
+    // point — in side profile a serrated arc from upright to trailing.
+    const sickle = lambert(0x2c5643);
+    const sickleDark = lambert(0x1e3d2f);
+    const tailG = new Group();
+    tailG.position.set(0, 0.28, -0.44);
+    bodyG.add(tailG);
+    const rTilts = [-0.3, -0.55, -0.85, -1.15];
+    for (let i = 0; i < rTilts.length; i++) {
+      const t = rTilts[i];
+      const f = orb(0.3, i % 2 ? sickleDark : sickle, 0.13, 1.45, 0.32);
+      f.position.set(
+        ((i % 2) - 0.5) * 0.1,
+        0.3 * Math.cos(t),
+        0.3 * Math.sin(t),
+      );
+      f.rotation.x = t;
+      f.rotation.z = ((i % 2) - 0.5) * 0.16;
+      tailG.add(f);
+    }
+    // Two long sickles: the tallest arc and a trailing one.
+    for (const side of [-1, 1]) {
+      for (const [tilt, len] of [
+        [-0.6, 1.85],
+        [-1.0, 1.6],
+      ]) {
+        const s = orb(0.3, sickleDark, 0.1, len, 0.28);
+        s.position.set(
+          side * 0.06,
+          0.34 * Math.cos(tilt),
+          0.34 * Math.sin(tilt),
+        );
+        s.rotation.x = tilt;
+        s.rotation.z = side * 0.1;
+        tailG.add(s);
+      }
+    }
+  } else {
+    // Tail: five feathers fanned FRONT-TO-BACK from a common quill point —
+    // in side profile the classic serrated hen wedge, tips up-and-back.
+    const tailG = new Group();
+    tailG.position.set(0, 0.26, -0.44);
+    bodyG.add(tailG);
+    const hTilts = [-0.2, -0.45, -0.7, -0.95, -1.2];
+    for (let i = 0; i < hTilts.length; i++) {
+      const t = hTilts[i];
+      const f = orb(0.3, i >= 3 ? M.dark : M.base, 0.15, 1.0, 0.3);
+      f.position.set(
+        ((i % 2) - 0.5) * 0.07,
+        0.24 * Math.cos(t),
+        0.24 * Math.sin(t),
+      );
+      f.rotation.x = t;
+      f.rotation.z = ((i % 2) - 0.5) * 0.12;
+      tailG.add(f);
+    }
   }
 
   // Wings pivot at their top edge so rotation.z lifts them outward.
@@ -873,64 +1022,106 @@ function buildChickenMesh(seedRnd) {
       tip.rotation.x = -0.25 - i * 0.12;
       g.add(tip);
     }
+    if (isChick) g.scale.setScalar(0.62); // stubby down wings
     bodyG.add(g);
     return g;
   }
   const wingL = wing(1);
   const wingR = wing(-1);
 
-  // Neck pivot: pecking rotates this.
+  // Neck pivot: pecking rotates this. Chicks scale the whole head group up
+  // (baby proportions); roosters get a light hackle collar.
   const neckG = new Group();
   neckG.position.set(0, 0.3, 0.34);
+  if (isChick) {
+    neckG.scale.setScalar(1.28);
+    neckG.position.y = 0.24;
+  }
   bodyG.add(neckG);
 
-  const neck = new Mesh(new CylinderGeometry(0.085, 0.125, 0.34, 12), M.base);
+  const neck = new Mesh(
+    new CylinderGeometry(0.085, 0.125, isChick ? 0.22 : 0.34, 12),
+    M.base,
+  );
   neck.rotation.x = 0.22;
-  neck.position.set(0, 0.1, 0.03);
+  neck.position.set(0, isChick ? 0.04 : 0.1, 0.03);
   neck.castShadow = true;
   neckG.add(neck);
   const head = orb(0.165, M.base, 1, 1.02, 1.05);
-  head.position.set(0, 0.3, 0.09);
+  head.position.set(0, isChick ? 0.22 : 0.3, 0.09);
   neckG.add(head);
+  if (isChick) {
+    // Down tuft on the crown.
+    const tuft = orb(0.06, M.light, 1, 0.8, 1);
+    tuft.position.set(0, 0.38, 0.06);
+    neckG.add(tuft);
+  }
+  if (kind === "rooster") {
+    const hackle = orb(0.24, M.light, 0.95, 0.62, 0.95);
+    hackle.position.set(0, 0.03, 0.03);
+    neckG.add(hackle);
+  }
 
-  // Comb: four red lobes along the crown.
-  const combSizes = [0.045, 0.062, 0.058, 0.042];
-  const combLift = [0, 0.02, 0.015, -0.01];
-  for (let i = 0; i < 4; i++) {
-    const lobe = orb(combSizes[i], combMat, 0.55, 1.25, 0.9);
-    lobe.position.set(0, 0.455 + combLift[i], 0.2 - i * 0.075);
-    neckG.add(lobe);
+  // Comb: red lobes along the crown, scaled per breed. Chicks skip it —
+  // except rooster chicks, which get a proud little nub.
+  const headY = isChick ? 0.22 : 0.3;
+  const combK = isChick
+    ? chickKind === "rooster"
+      ? 0.4
+      : 0
+    : { hen: 1, rooster: 1.55, barred: 0.85, bantam: 0.6 }[styleKind] || 1;
+  if (combK > 0) {
+    const lobeCount = styleKind === "rooster" && !isChick ? 5 : 4;
+    const combSizes = [0.045, 0.062, 0.058, 0.042, 0.05];
+    const combLift = [0, 0.02, 0.015, -0.01, 0.005];
+    for (let i = 0; i < lobeCount; i++) {
+      const lobe = orb(combSizes[i] * combK, combMat, 0.55, 1.25, 0.9);
+      lobe.position.set(
+        0,
+        headY + 0.155 + combLift[i] * combK,
+        0.2 - i * (lobeCount === 5 ? 0.068 : 0.075),
+      );
+      neckG.add(lobe);
+    }
   }
 
   const beakU = new Mesh(new ConeGeometry(0.055, 0.17, 4), legMat);
   beakU.rotation.x = Math.PI / 2;
-  beakU.position.set(0, 0.3, 0.335);
+  beakU.position.set(0, headY, 0.335);
   beakU.castShadow = true;
   neckG.add(beakU);
   const beakL = new Mesh(new ConeGeometry(0.038, 0.1, 4), lambert(0xd08b2e));
   beakL.rotation.x = Math.PI / 2;
-  beakL.position.set(0, 0.265, 0.3);
+  beakL.position.set(0, headY - 0.035, 0.3);
   neckG.add(beakL);
 
-  // Wattles under the beak, eyes with a cream ring.
+  // Wattles under the beak (not on chicks), eyes with a cream ring.
+  const wattleK = isChick
+    ? 0
+    : { hen: 1, rooster: 1.6, barred: 1, bantam: 0.7 }[styleKind] || 1;
   for (const side of [-1, 1]) {
-    const wattle = orb(0.042, combMat, 0.7, 1.5, 0.75);
-    wattle.position.set(side * 0.045, 0.185, 0.245);
-    neckG.add(wattle);
+    if (wattleK > 0) {
+      const wattle = orb(0.042 * wattleK, combMat, 0.7, 1.5, 0.75);
+      wattle.position.set(side * 0.045, headY - 0.115, 0.245);
+      neckG.add(wattle);
+    }
     const ring = orb(0.04, lambert(0xf6efdf), 1, 1, 0.6);
-    ring.position.set(side * 0.135, 0.345, 0.175);
+    ring.position.set(side * 0.135, headY + 0.045, 0.175);
     ring.rotation.y = side * 0.55;
     neckG.add(ring);
     const pupil = orb(0.022, lambert(0x1c1c1c), 1, 1, 0.7);
-    pupil.position.set(side * 0.15, 0.345, 0.19);
+    pupil.position.set(side * 0.15, headY + 0.045, 0.19);
     pupil.rotation.y = side * 0.55;
     neckG.add(pupil);
   }
 
   // Legs pivot at the hip; thigh fluff, shin, three toes and a rear spur.
+  // Chick legs are shorter with a lower hip so the sole stays on the ground.
+  const hipY = isChick ? 0.34 : 0.44;
+  const legScale = isChick ? 0.78 : 1;
   function leg(side) {
     const g = new Group();
-    g.position.set(side * 0.15, 0.44, -0.04);
+    g.position.set(side * 0.15, hipY, -0.04);
     const thigh = orb(0.1, M.base, 0.95, 1.15, 0.95);
     thigh.position.set(0, -0.05, 0.01);
     g.add(thigh);
@@ -955,13 +1146,16 @@ function buildChickenMesh(seedRnd) {
     const spur = new Mesh(new BoxGeometry(0.028, 0.03, 0.09), legMat);
     spur.position.set(0, -0.425, -0.055);
     g.add(spur);
+    g.scale.setScalar(legScale);
     root.add(g);
     return g;
   }
   const legL = leg(1);
   const legR = leg(-1);
 
-  const s = 0.9 + seedRnd() * 0.25;
+  const s = isChick
+    ? 0.42 * (0.95 + seedRnd() * 0.15)
+    : style.scale[0] + seedRnd() * (style.scale[1] - style.scale[0]);
   root.scale.setScalar(s);
 
   return { root, bodyG, neckG, wingL, wingR, legL, legR };
@@ -1087,7 +1281,12 @@ let nestSlots = 0;
 
 class Chicken {
   constructor(info) {
-    this.cardId = info.card_id;
+    this.cardId = info.id || info.card_id; // roster id (card id for hens)
+    this.kind = info.kind || "hen";
+    this.chickKind = info.chick_kind || null;
+    this.parentId = info.parent_id || null;
+    this.chickSlot = 0;
+    this.nextChickSlot = 0;
     this.title = info.title;
     this.project = info.project_name || "";
     this.phase = info.phase;
@@ -1114,15 +1313,36 @@ class Chicken {
     this.nest = null;
     this.nestPos = null;
     this.fadeT = -1;
+    this.alertBaseY = this.kind === "chick" ? 3.4 : 2.55;
+
+    // Chicks hatch next to their parent and take a follow slot.
+    const parent =
+      this.kind === "chick" && this.parentId ? flock[this.parentId] : null;
+    if (parent) {
+      this.chickSlot = parent.nextChickSlot++;
+      this.posV = parent.posV
+        .clone()
+        .add(new Vector3(0.4 + 0.2 * (this.chickSlot % 3), 0, -0.5));
+    }
 
     const rnd = mulberry32(hashStr(this.cardId));
     if (scene) {
-      this.viz = buildChickenMesh(rnd);
+      this.viz = buildBirdMesh(rnd, this.kind, this.chickKind);
       this.viz.root.position.copy(this.posV);
       this.viz.root.userData.cardId = this.cardId;
-      this.label = buildLabel(this.title, this.project);
+      this.label = buildLabel(
+        this.title,
+        this.project || KIND_LABEL[this.kind] || "",
+      );
+      if (this.kind === "chick") {
+        // The root is ~0.42-scaled, which shrinks children too: boost the
+        // label/alert back to readable size and hover height.
+        this.label.scale.multiplyScalar(1.45);
+        this.label.position.y = 4.6;
+      }
       this.viz.root.add(this.label);
       this.alert = buildAlertIcon();
+      this.alert.position.y = this.alertBaseY;
       this.viz.root.add(this.alert);
       scene.add(this.viz.root);
       this.baseScale = this.viz.root.scale.x;
@@ -1133,7 +1353,11 @@ class Chicken {
     }
     this.setQuestion(info.question || null);
 
-    this.walkTo(this.randomFieldPoint(rnd), "wander");
+    if (parent) {
+      this.mode = "follow"; // steering picks a slot target next frame
+    } else {
+      this.walkTo(this.randomFieldPoint(rnd), "wander");
+    }
     if (info.phase === "testing") this.goNest();
     if (info.phase === "done" || info.phase === "wont_do") this.goHome();
   }
@@ -1214,6 +1438,14 @@ class Chicken {
     this.leaveNest();
     this.peckQueue.length = 0;
     this.peckPlan = null;
+    // A finishing chick delivers its result: run to the parent and vanish
+    // there. Orphans (and every other bird) head for the coop door.
+    const parent =
+      this.kind === "chick" && this.parentId ? flock[this.parentId] : null;
+    if (parent && !parent.removed && parent.mode !== "gone") {
+      this.walkTo(parent.posV.clone(), "absorb");
+      return;
+    }
     this.walkTo(DOOR_POS, "homeArrive");
   }
 
@@ -1252,21 +1484,66 @@ class Chicken {
   update(dt) {
     const viz = this.viz;
 
+    // Chicks shadow their parent: pick a slot behind it (or a spot around
+    // its nest) and keep closing on it. Re-steered continuously, so a moving
+    // parent drags its brood along.
+    if (
+      this.kind === "chick" &&
+      this.phase === "working" &&
+      (this.mode === "wander" || this.mode === "walk" || this.mode === "follow")
+    ) {
+      const parent = this.parentId ? flock[this.parentId] : null;
+      if (parent && !parent.removed && parent.mode !== "gone") {
+        let anchor = parent.posV;
+        let baseYaw = parent.yaw + Math.PI; // behind the parent
+        let ringR = 0.8 + (this.chickSlot % 3) * 0.24;
+        if (parent.mode === "nest" && parent.nestPos) {
+          anchor = parent.nestPos;
+          baseYaw = 0;
+          ringR = 1.15;
+        }
+        const a = baseYaw + ((this.chickSlot % 5) - 2) * 0.55;
+        const tx = anchor.x + Math.sin(a) * ringR;
+        const tz = anchor.z + Math.cos(a) * ringR;
+        const dx = tx - this.posV.x;
+        const dz = tz - this.posV.z;
+        if (dx * dx + dz * dz > 0.12) {
+          this.target = new Vector3(tx, 0, tz);
+          this.afterWalk = "follow";
+          this.mode = "walk";
+        }
+      }
+    }
+
     // Movement for walking modes.
     const moving =
       (this.mode === "walk" || this.mode === "emerge") && this.target;
     if (moving) {
-      const speed = this.afterWalk === "homeArrive" ? HOME_SPEED : WALK_SPEED;
+      // A chick absorbing into a moving parent keeps retargeting it.
+      if (this.afterWalk === "absorb" && this.parentId) {
+        const parent = flock[this.parentId];
+        if (parent && !parent.removed && parent.mode !== "gone")
+          this.target.copy(parent.posV);
+      }
       const to = this.target.clone().sub(this.posV);
       to.y = 0;
       const dist = to.length();
+      const speed =
+        this.afterWalk === "homeArrive"
+          ? HOME_SPEED
+          : this.afterWalk === "absorb"
+            ? HOME_SPEED * 1.15
+            : this.afterWalk === "follow" && dist > 2
+              ? WALK_SPEED * 1.7
+              : WALK_SPEED;
       if (dist < 0.12) {
         this.mode =
           this.afterWalk === "homeArrive" ? "homeArrive" : this.afterWalk;
         this.target = null;
         this.pauseUntil = performance.now() / 1000 + 1 + Math.random() * 2.2;
         if (this.mode === "nest") this.sitDown();
-        if (this.mode === "homeArrive") this.fadeT = 0;
+        if (this.mode === "homeArrive" || this.mode === "absorb")
+          this.fadeT = 0;
       } else {
         to.normalize();
         this.posV.addScaledVector(to, Math.min(speed * dt, dist));
@@ -1279,11 +1556,15 @@ class Chicken {
       }
     }
 
-    // Idle wandering: alternate pause / new waypoint, and play queued pecks.
-    if (this.mode === "wander") {
+    // Idle: play queued pecks; wanderers also pick fresh waypoints (chicks
+    // in follow stand their slot until the parent moves).
+    if (this.mode === "wander" || this.mode === "follow") {
       if (this.peckQueue.length > 0) {
         this.startPeck(this.peckQueue.shift());
-      } else if (performance.now() / 1000 > this.pauseUntil) {
+      } else if (
+        this.mode === "wander" &&
+        performance.now() / 1000 > this.pauseUntil
+      ) {
         this.walkTo(this.randomFieldPoint(), "wander");
       }
     }
@@ -1356,7 +1637,7 @@ class Chicken {
         viz.neckG.rotation.x = 0.12 + Math.sin(this.walkPhase * 2) * 0.08;
         viz.wingL.rotation.z = -0.12;
         viz.wingR.rotation.z = 0.12;
-      } else if (this.mode === "wander") {
+      } else if (this.mode === "wander" || this.mode === "follow") {
         viz.legL.rotation.x = 0;
         viz.legR.rotation.x = 0;
         viz.root.position.y = 0;
@@ -1366,11 +1647,29 @@ class Chicken {
       }
     }
 
+    // A finished chick reached its parent: happy hops, shrink, puff, gone.
+    // (After the transform block so the hop's y survives the posV copy.)
+    if (this.mode === "absorb") {
+      this.fadeT += dt;
+      const t = this.fadeT;
+      if (viz) {
+        viz.root.position.y =
+          Math.abs(Math.sin(t * 9)) * 0.3 * Math.max(0, 1 - t / 0.7);
+        const k = Math.max(0.001, 1 - t / 0.7);
+        viz.root.scale.setScalar(this.baseScale * k);
+      }
+      if (this.fadeT > 0.75) {
+        spawnPuff(this.posV.clone());
+        this.mode = "gone";
+        this.dispose();
+      }
+    }
+
     // Alert icon: bob + gentle pulse while a question is pending; a short
     // celebratory double-flap right after the user answers.
     if (this.alert && this.alert.visible) {
       const tSec = performance.now() / 1000;
-      this.alert.position.y = 2.55 + Math.sin(tSec * 3.1) * 0.09;
+      this.alert.position.y = this.alertBaseY + Math.sin(tSec * 3.1) * 0.09;
       const k = 1 + Math.sin(tSec * 5.3) * 0.05;
       this.alert.scale.set(0.55 * k, 0.55 * k, 1);
     }
@@ -1446,9 +1745,11 @@ window.addEventListener("message", (e) => {
 const DEMO = window.parent === window;
 
 function demoState(t) {
-  const chickens = [
+  const birds = [
     {
+      id: "demo-worker",
       card_id: "demo-worker",
+      kind: "hen",
       project_name: "demo",
       title: "Implement egg module",
       step: "in_progress",
@@ -1492,7 +1793,9 @@ function demoState(t) {
           : null,
     },
     {
+      id: "demo-tester",
       card_id: "demo-tester",
+      kind: "hen",
       project_name: "demo",
       title: "Review coop door",
       step: "review",
@@ -1503,11 +1806,108 @@ function demoState(t) {
       blocked: false,
       busy: true,
     },
+    {
+      id: "demo-chat",
+      kind: "rooster",
+      project_name: "",
+      title: "Morning planning",
+      phase: "working",
+      activity: Math.floor(t / 4),
+      tool_class: "read",
+      last_tool: "search_web",
+      blocked: false,
+      busy: true,
+      question:
+        t > 12
+          ? {
+              id: "demo-q-2",
+              session_id: "demo-chat-session",
+              data: {
+                question:
+                  "Deploy the coop update to the farm fleet now, or wait for the weekend window?",
+                options: ["Deploy now", "Weekend window"],
+              },
+            }
+          : null,
+    },
+    {
+      id: "demo-cron",
+      kind: "barred",
+      project_name: "",
+      title: "Nightly digest",
+      phase: "working",
+      activity: Math.floor(t / 5),
+      tool_class: "read",
+      last_tool: "read_file",
+      blocked: false,
+      busy: true,
+    },
+    {
+      id: "demo-temp",
+      kind: "bantam",
+      project_name: "",
+      title: "research: egg prices",
+      phase: "working",
+      activity: Math.floor(t / 6),
+      tool_class: "read",
+      last_tool: "fetch_url",
+      blocked: false,
+      busy: true,
+    },
+    // Chicks last: their parents must already be in the flock.
+    {
+      id: "demo-sub1",
+      kind: "chick",
+      chick_kind: "hen",
+      parent_id: "demo-worker",
+      project_name: "",
+      title: "sub: shell audit",
+      phase: "working",
+      activity: Math.floor(t / 2),
+      tool_class: "read",
+      last_tool: "search_files",
+      blocked: false,
+      busy: true,
+    },
+    {
+      id: "demo-sub2",
+      kind: "chick",
+      chick_kind: "hen",
+      parent_id: "demo-worker",
+      project_name: "",
+      title: "sub: yolk tests",
+      phase: "working",
+      activity: Math.floor(t / 2.5),
+      tool_class: "command",
+      last_tool: "run_tests",
+      blocked: false,
+      busy: true,
+    },
   ];
+  // A rooster chick that periodically finishes and hops back into its parent.
+  const sub3Cycle = t % 24;
+  if (sub3Cycle < 20) {
+    birds.push({
+      id: "demo-sub3",
+      kind: "chick",
+      chick_kind: "rooster",
+      parent_id: "demo-chat",
+      project_name: "",
+      title: "sub: fetch prices",
+      phase: sub3Cycle < 16 ? "working" : "done",
+      activity: Math.floor(Math.min(sub3Cycle, 16) / 3),
+      tool_class: "read",
+      last_tool: "fetch_url",
+      blocked: false,
+      busy: true,
+    });
+  }
   const cycle = t % 30;
   if (cycle < 22) {
-    chickens.push({
+    birds.push({
+      id: "demo-cycler",
       card_id: "demo-cycler",
+      kind: "hen",
       project_name: "demo",
       title: cycle < 14 ? "Wander the run" : "Head home",
       step: cycle < 14 ? "in_progress" : "done",
@@ -1519,7 +1919,7 @@ function demoState(t) {
       busy: true,
     });
   }
-  return { chickens };
+  return { birds };
 }
 
 // ── Reconciler + mirror ───────────────────────────────────────────────
@@ -1530,16 +1930,23 @@ const hudEl = document.getElementById("hud");
 const emptyEl = document.getElementById("empty");
 let lastError = null;
 
+// Ids whose exit animation already played: don't respawn them while the
+// roster entry lingers (done cards / completed chicks stay listed briefly).
+const goneIds = {};
+
 function reconcile(state) {
   const seen = {};
-  for (const info of state.chickens || []) {
-    seen[info.card_id] = true;
-    let c = flock[info.card_id];
+  for (const info of state.birds || state.chickens || []) {
+    const id = info.id || info.card_id;
+    seen[id] = true;
+    if (goneIds[id]) continue; // exit played; entry is just lingering
+    let c = flock[id];
     if (!c) {
       c = new Chicken(info);
-      flock[info.card_id] = c;
+      flock[id] = c;
     } else {
       c.title = info.title;
+      c.parentId = info.parent_id || c.parentId;
       c.setPhase(info.phase);
       c.noteActivity(info.activity, info.tool_class);
       c.lastTool = info.last_tool || c.lastTool;
@@ -1549,24 +1956,35 @@ function reconcile(state) {
   for (const id of Object.keys(flock)) {
     if (!seen[id]) flock[id].setGone();
   }
+  for (const id of Object.keys(goneIds)) {
+    if (!seen[id]) delete goneIds[id];
+  }
   syncMirror();
 }
 
 function syncMirror() {
   const rows = [];
+  let hens = 0;
   let working = 0;
   let testing = 0;
   let questions = 0;
+  const extras = { rooster: 0, chick: 0, barred: 0, bantam: 0 };
   for (const id of Object.keys(flock)) {
     const c = flock[id];
     if (c.mode === "gone") {
+      goneIds[id] = true;
       const el = mirrorEl.querySelector('[data-card-id="' + id + '"]');
       if (el) el.remove();
       delete flock[id];
       continue;
     }
-    if (c.phase === "working") working++;
-    if (c.phase === "testing") testing++;
+    if (c.kind === "hen") {
+      hens++;
+      if (c.phase === "working") working++;
+      if (c.phase === "testing") testing++;
+    } else if (extras[c.kind] !== undefined) {
+      extras[c.kind]++;
+    }
     if (c.question) questions++;
     let el = mirrorEl.querySelector('[data-card-id="' + id + '"]');
     if (!el) {
@@ -1575,14 +1993,18 @@ function syncMirror() {
       el.setAttribute("data-card-id", id);
       mirrorEl.appendChild(el);
     }
+    el.setAttribute("data-kind", c.kind);
     el.setAttribute("data-phase", c.phase);
     el.setAttribute("data-anim", c.mode);
     el.setAttribute("data-activity", String(c.activitySeen));
     el.setAttribute("data-pecks", String(c.pecksPlayed));
     el.setAttribute("data-title", c.title);
     el.setAttribute("data-question", c.question ? c.question.id : "");
+    if (c.parentId) el.setAttribute("data-parent", c.parentId);
     rows.push({
       cardId: id,
+      kind: c.kind,
+      parentId: c.parentId || null,
       title: c.title,
       phase: c.phase,
       anim: c.mode,
@@ -1593,17 +2015,30 @@ function syncMirror() {
   }
   window.__coopState = rows;
   const total = rows.length;
+  const extraBits = [];
+  if (extras.rooster)
+    extraBits.push(
+      extras.rooster + " rooster" + (extras.rooster === 1 ? "" : "s"),
+    );
+  if (extras.chick)
+    extraBits.push(extras.chick + " chick" + (extras.chick === 1 ? "" : "s"));
+  if (extras.barred) extraBits.push(extras.barred + " barred");
+  if (extras.bantam)
+    extraBits.push(
+      extras.bantam + " bantam" + (extras.bantam === 1 ? "" : "s"),
+    );
   hudEl.textContent =
     (renderer ? "" : "(no WebGL — roster only) ") +
     (lastError ? "reconnecting… " : "") +
-    total +
+    hens +
     " hen" +
-    (total === 1 ? "" : "s") +
+    (hens === 1 ? "" : "s") +
     " out · " +
     working +
     " working · " +
     testing +
     " testing" +
+    (extraBits.length ? " · " + extraBits.join(" · ") : "") +
     (questions > 0
       ? " · " + questions + " question" + (questions === 1 ? "" : "s")
       : "");
@@ -1612,6 +2047,13 @@ function syncMirror() {
 
 // Test/demo hooks: force a peck, inspect or open a hen's pending question.
 window.__coopTest = {
+  kind(cardId) {
+    const c = flock[cardId];
+    return c ? c.kind : null;
+  },
+  birds() {
+    return window.__coopState || [];
+  },
   peck(cardId, cls) {
     const c = flock[cardId];
     if (c) c.peckQueue.push(cls || "command");
@@ -1964,6 +2406,17 @@ const PHASE_BLURB = {
   wont_do: "heading home",
 };
 
+/// Context line for the modal: workflow blurb for card hens, session-flavored
+/// wording for every other bird.
+function contextBlurb(chicken) {
+  if (chicken.kind && chicken.kind !== "hen") {
+    const what = KIND_LABEL[chicken.kind] || "session";
+    return chicken.phase === "working"
+      ? "live " + what + " session"
+      : what + " session winding down";
+  }
+  return PHASE_BLURB[chicken.phase] || chicken.phase;
+}
 function openQuestionModal(chicken) {
   const q = chicken.question;
   if (!q) return;
@@ -2080,11 +2533,11 @@ function openQuestionModal(chicken) {
     '<div class="coop-ctx-meta">' +
     escapeHtml(project || "") +
     (project ? " · " : "") +
-    escapeHtml(PHASE_BLURB[chicken.phase] || chicken.phase) +
+    escapeHtml(contextBlurb(chicken)) +
     " · " +
     escapeHtml(activityLine) +
     "</div>" +
-    pipelineSvg(chicken.phase) +
+    (chicken.kind === "hen" ? pipelineSvg(chicken.phase) : "") +
     (desc
       ? '<div class="coop-ctx-desc"><details' +
         (desc.length < 280 ? " open" : "") +
@@ -2113,12 +2566,23 @@ async function poll() {
   try {
     if (DEMO) {
       reconcile(demoState(demoClock));
-      // Auto-open the modal once in the standalone demo so the Q&A flow is
-      // visible without hunting for the hen.
+      // Auto-open each demo question once (worker first, then the rooster's
+      // card-less one) so the Q&A flow is visible without hunting birds.
       const dw = flock["demo-worker"];
-      if (!window.__demoQuestionOpened && dw && dw.question) {
+      if (!FOCUS_ID && !window.__demoQuestionOpened && dw && dw.question) {
         window.__demoQuestionOpened = true;
         openQuestionModal(dw);
+      }
+      const dc = flock["demo-chat"];
+      if (
+        !FOCUS_ID &&
+        !window.__demoChatQuestionOpened &&
+        (!modalEl || modalEl.hidden) &&
+        dc &&
+        dc.question
+      ) {
+        window.__demoChatQuestionOpened = true;
+        openQuestionModal(dc);
       }
     } else {
       const res = await apiFetch("/api/plugin-ui/chicken-coop/state");
@@ -2134,6 +2598,25 @@ async function poll() {
   }
 }
 
+// ?focus=<bird id> (demo): hold the camera on one bird for close-up model
+// shots; the bird pauses its wandering while focused.
+const FOCUS_ID = (() => {
+  try {
+    return new URLSearchParams(location.search).get("focus");
+  } catch (e) {
+    return null;
+  }
+})();
+// ?yaw=<radians> (with ?focus): pose the focused bird at a fixed heading so
+// profile shots are unambiguous.
+const FOCUS_YAW = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get("yaw");
+    return v === null ? null : parseFloat(v);
+  } catch (e) {
+    return null;
+  }
+})();
 let lastT = performance.now();
 
 function animate() {
@@ -2151,6 +2634,49 @@ function animate() {
   }
   if (dirty) syncMirror();
   updatePuffs(dt);
+  if (FOCUS_ID && renderer) {
+    // Model-inspection mode: only the focused bird and its family (parent /
+    // chicks) stay visible and labels hide, so nothing photobombs the shot.
+    const c = flock[FOCUS_ID];
+    for (const id of Object.keys(flock)) {
+      const o = flock[id];
+      o.pauseUntil = Infinity;
+      if (o.label) o.label.visible = false;
+      if (o.viz) {
+        const family =
+          id === FOCUS_ID ||
+          o.parentId === FOCUS_ID ||
+          (c && c.parentId === id);
+        o.viz.root.visible = family;
+      }
+    }
+    if (c && c.viz && c.mode !== "gone") {
+      if (FOCUS_YAW !== null && !Number.isNaN(FOCUS_YAW)) {
+        c.posV.set(2.5, 0, 1.5); // clear of the coop for an unobstructed shot
+        c.yaw = FOCUS_YAW;
+        c.target = null;
+        if (c.mode === "walk" || c.mode === "emerge") c.mode = "wander";
+      }
+      const p = c.posV;
+      // Approach from the side opposite the parent so it can't block the
+      // lens; frame chicks lower and closer.
+      let ox = 1.7;
+      let oz = 2.2;
+      const par = c.parentId ? flock[c.parentId] : null;
+      if (par) {
+        const dx = p.x - par.posV.x;
+        const dz = p.z - par.posV.z;
+        const dl = Math.hypot(dx, dz) || 1;
+        const r = c.kind === "chick" ? 1.6 : 2.4;
+        ox = (dx / dl) * r;
+        oz = (dz / dl) * r;
+      }
+      const camY = c.kind === "chick" ? 0.85 : 1.35;
+      const lookY = c.kind === "chick" ? 0.28 : 0.55;
+      camera.position.set(p.x + ox, camY, p.z + oz);
+      camera.lookAt(p.x, lookY, p.z);
+    }
+  }
   if (renderer) renderer.render(scene, camera);
 }
 
