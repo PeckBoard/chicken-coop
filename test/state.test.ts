@@ -27,7 +27,10 @@ function card(over: Partial<Card>): Card {
   };
 }
 
-function port(cards: Card[], tails: Record<string, SlimEvent[]>): HostPort & { seen: number[] } {
+function port(
+  cards: Card[],
+  tails: Record<string, SlimEvent[]>,
+): HostPort & { seen: number[] } {
   const seen: number[] = [];
   return {
     seen,
@@ -87,7 +90,11 @@ describe("phaseForCard", () => {
       completed_at: new Date(NOW - TERMINAL_LINGER_MS - 1000).toISOString(),
     });
     expect(phaseForCard(old, NOW)).toBeNull();
-    const wontDo = card({ step: "wont_do", completed_at: null, updated_at: "2026-07-23T11:59:50Z" });
+    const wontDo = card({
+      step: "wont_do",
+      completed_at: null,
+      updated_at: "2026-07-23T11:59:50Z",
+    });
     expect(phaseForCard(wontDo, NOW)).toBe("wont_do");
   });
 });
@@ -143,6 +150,50 @@ describe("buildState", () => {
       tails,
     );
     const state = buildState(p, NOW);
-    expect(state.chickens[0]).toMatchObject({ activity: 1, tool_class: "read", busy: false });
+    expect(state.chickens[0]).toMatchObject({
+      activity: 1,
+      tool_class: "read",
+      busy: false,
+    });
+  });
+
+  it("attaches the oldest unresolved question and tolerates a missing host fn", () => {
+    const tails = { s1: [] as SlimEvent[] };
+    const p = port([card({})], tails);
+
+    // Port without sessionQuestions (older core): no alert, no crash.
+    expect(buildState(p, NOW).chickens[0].question).toBeNull();
+
+    const qData = {
+      questions: [
+        {
+          question: "Which DB?",
+          header: "Setup",
+          options: [{ label: "SQLite", description: "" }],
+        },
+      ],
+      cardTitle: "Lay an egg",
+    };
+    const withQ: HostPort = {
+      ...p,
+      sessionQuestions: (sid) =>
+        sid === "s1" ? [{ id: "q-1", data: qData }] : [],
+    };
+    const chick = buildState(withQ, NOW).chickens[0];
+    expect(chick.question).toEqual({
+      id: "q-1",
+      session_id: "s1",
+      data: qData,
+    });
+    expect(chick.session_id).toBe("s1");
+
+    // A throwing host fn degrades to no alert.
+    const throwing: HostPort = {
+      ...p,
+      sessionQuestions: () => {
+        throw new Error("plugin lacks the 'worker_questions' permission");
+      },
+    };
+    expect(buildState(throwing, NOW).chickens[0].question).toBeNull();
   });
 });

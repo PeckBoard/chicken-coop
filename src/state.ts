@@ -25,6 +25,15 @@ export const TERMINAL_LINGER_MS = 120_000;
 export type Phase = "working" | "testing" | "done" | "wont_do";
 export type ToolClass = "command" | "edit" | "read" | "other";
 
+/// A pending user question on a chicken's worker session — the page shows an
+/// alert over the hen and opens the Q&A modal from it. `data` is the raw
+/// question event payload (questions array + card/project context).
+export interface PendingQuestion {
+  id: string;
+  session_id: string;
+  data: any;
+}
+
 export interface Chicken {
   card_id: string;
   project_id: string;
@@ -37,13 +46,20 @@ export interface Chicken {
   activity: number;
   last_tool: string | null;
   tool_class: ToolClass | null;
+  session_id: string | null;
+  question: PendingQuestion | null;
 }
-
 /// The host functions state derivation needs, injectable for tests.
+/// `sessionQuestions` is optional: on a core without the `worker_questions`
+/// host functions the roster still builds, just with no alerts.
 export interface HostPort {
   listCards(): Card[];
   listProjects(): { id: string; name: string }[];
-  sessionEvents(sessionId: string, afterSeq: number): { events: SlimEvent[]; latest_seq: number | null };
+  sessionEvents(
+    sessionId: string,
+    afterSeq: number,
+  ): { events: SlimEvent[]; latest_seq: number | null };
+  sessionQuestions?(sessionId: string): { id: string; data: any }[];
 }
 
 /// Bucket a tool name into the peck style the page plays. Order matters:
@@ -99,7 +115,10 @@ export function resetStateCache(): void {
 
 /// One poll: cards → chickens, tailing each active card's worker session for
 /// new tool events.
-export function buildState(port: HostPort, nowMs: number): { chickens: Chicken[] } {
+export function buildState(
+  port: HostPort,
+  nowMs: number,
+): { chickens: Chicken[] } {
   const cards = port.listCards();
   const projectNames: Record<string, string> = {};
   for (const p of port.listProjects()) projectNames[p.id] = p.name;
@@ -131,6 +150,23 @@ export function buildState(port: HostPort, nowMs: number): { chickens: Chicken[]
         entry.lastClass = classifyTool(last.name);
       }
     }
+    // Pending user question, if the host exposes them: oldest unresolved
+    // question on the worker session. A throw (older core, permission not
+    // yet granted) degrades to "no alert" rather than failing the roster.
+    let question: PendingQuestion | null = null;
+    if (
+      sid &&
+      (phase === "working" || phase === "testing") &&
+      port.sessionQuestions
+    ) {
+      try {
+        const qs = port.sessionQuestions(sid);
+        if (qs.length > 0)
+          question = { id: qs[0].id, session_id: sid, data: qs[0].data };
+      } catch (e) {
+        question = null;
+      }
+    }
 
     const entry = activity[card.id];
     chickens.push({
@@ -145,6 +181,8 @@ export function buildState(port: HostPort, nowMs: number): { chickens: Chicken[]
       activity: entry ? entry.count : 0,
       last_tool: entry ? entry.lastTool : null,
       tool_class: entry ? entry.lastClass : null,
+      session_id: sid || null,
+      question,
     });
   }
 

@@ -22,12 +22,24 @@ lands on `done` / `wont_do`.
     on each card's worker session; `agent-tool-start` events increment a
     per-card counter, classified into peck styles (command / edit / read /
     other). The page pecks on observed deltas.
+  - questions: `peckboard_session_questions` (`worker_questions`) surfaces a
+    worker's unresolved `ask_user` question. The hen gets a bobbing "!" badge;
+    clicking her opens a Q&A modal with the question, its options, and enough
+    context to answer (card title/description, project, a workflow-position
+    diagram, recent tool activity).
+- **Answer** (`POST /api/plugin-ui/chicken-coop/answer`, authed): body
+  `{session_id, question_id, answers, rejected}`. Validated in the wasm, then
+  resolved via `peckboard_answer_question`, which runs core's own
+  question-resolution flow (event + broadcast + conversation resume) under
+  the user's authority.
 
 Because activity comes from the event log (not `mcp.tool.call.*` hooks), it
 works identically for real providers and the deterministic `mock:*` providers
 used by Playwright e2e.
 
-Requires a PeckBoard with the `peckboard_session_events` host function.
+Requires a PeckBoard with the `peckboard_session_events` host function; the
+question alert/answer flow additionally needs `peckboard_session_questions` /
+`peckboard_answer_question` (and the `worker_questions` permission grant).
 
 ## Development
 

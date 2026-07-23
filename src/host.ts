@@ -63,3 +63,37 @@ export function sessionEvents(
     latest_seq: typeof res?.latest_seq === "number" ? res.latest_seq : null,
   };
 }
+
+/// An unresolved `question` event as returned by
+/// `peckboard_session_questions` — full payload (question list, card
+/// context), unlike the slim activity events.
+export interface QuestionEvent {
+  id: string;
+  seq: number;
+  ts: number;
+  data: any;
+}
+
+export function sessionQuestions(sessionId: string): QuestionEvent[] {
+  const res = hostCall("peckboard_session_questions", {
+    session_id: sessionId,
+  });
+  return Array.isArray(res?.questions) ? res.questions : [];
+}
+
+/// Resolve a pending question as the authenticated user. `answers` maps
+/// question index ("0", "1", …) to the chosen label / typed text — the same
+/// shape core's own UI posts. Throws on a host-side refusal.
+export function answerQuestion(
+  sessionId: string,
+  questionId: string,
+  answers: Record<string, string>,
+  rejected: boolean,
+): void {
+  hostCall("peckboard_answer_question", {
+    session_id: sessionId,
+    question_id: questionId,
+    answers,
+    rejected,
+  });
+}
