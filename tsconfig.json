@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "lib": ["es2020"],
+    "types": ["@extism/js-pdk"],
+    "target": "es2020",
+    "module": "es2020",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*", "test/**/*"]
+}

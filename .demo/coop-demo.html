@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chicken Coop (demo)</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #87b5d8; }
+  #stage { position: fixed; inset: 0; }
+  #hud { position: fixed; top: 10px; left: 12px; padding: 6px 10px;
+    background: rgba(255,255,255,0.82); border-radius: 8px;
+    font: 13px/1.4 system-ui, sans-serif; color: #333; pointer-events: none; }
+  #empty { position: fixed; inset: 0; display: none; align-items: center;
+    justify-content: center; pointer-events: none;
+    font: 15px system-ui, sans-serif; color: rgba(40,60,40,0.75); }
+  #coop-mirror { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud" data-testid="coop-hud"></div>
+<div id="empty" data-testid="coop-empty">All hens are cooped up. Start a card to let one out.</div>
+<div id="coop-mirror" data-testid="coop-mirror"></div>
+<script src="page.js"></script>
+</body>
+</html>
