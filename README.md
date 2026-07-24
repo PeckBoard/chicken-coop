@@ -69,6 +69,18 @@ exactly as long as `subagent_completed_at` is unset.
   coop window and doorway. Idle birds (no live work) roost beside the coop
   after dark; birds with active work stay out and keep pecking. Force any
   time of day with `?hour=` (see Development below).
+- **Feed scatter**: clicking empty ground tosses a handful of feed kernels
+  there — a little arc of grain, a dust puff on landing — and nearby idle
+  birds trot over and peck it up until it's gone. Work comes first: birds
+  mid-task, nesting, roosting, or sulking ignore the feed, and when pens are
+  up birds only eat feed thrown into their own pen (nobody crosses a fence
+  for a snack). A few-second cooldown keeps it from being spammed; uneaten
+  kernels sink away after a minute.
+- **Camera modes**: the 🎥 button next to the mute toggle cycles three
+  views — Free (the classic fixed shot), Follow (a smooth crane shot
+  tracking whichever bird was most recently active, hopping targets as the
+  action moves), and Chicken Cam (a head-height view from that bird with a
+  gentle bob). Escape returns to Free; every transition eases, no cuts.
 - **Sound** (synthesized WebAudio, no audio files): soft clucks on pecks —
   sharp for commands, mid for edits, soft for reads — a rooster crow when a
   question badge first appears, and a faint daytime breeze with distant
@@ -106,7 +118,9 @@ browser-driven verification:
 hide), `&yaw=<radians>` poses it at a fixed heading in the open field,
 `?hour=<0..24, fractional>` forces the day/night cycle to any local hour
 (`?hour=21.5` → night: roosting idle birds and the glowing coop window;
-`?hour=12` → noon), and `?err=1` throws a probe error — uncaught errors
+`?hour=12` → noon), `?feed=<x>,<z>` auto-tosses feed at that field spot
+shortly after load (and every ~12s), `?cam=<free|follow|chicken>` starts in
+that camera mode, and `?err=1` throws a probe error — uncaught errors
 render into a visible `#coop-errors` box (`data-count` attribute) since the
 harness can't read the console.
 

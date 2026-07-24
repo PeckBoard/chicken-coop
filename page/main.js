@@ -60,6 +60,10 @@ const WALK_SPEED = 1.7;
 const HOME_SPEED = 2.4;
 const POLL_MS = 1000;
 const MAX_QUEUED_PECKS = 3;
+const FEED_COOLDOWN_S = 4; // min seconds between ground-click feed tosses
+const FEED_KERNELS = 10;
+const FEED_RADIUS = 5.5; // birds this close trot over for feed
+const FEED_EXPIRE_S = 60; // uneaten kernels sink away after this long
 
 // ── Small utilities ───────────────────────────────────────────────────
 
@@ -1966,6 +1970,161 @@ function updatePuffs(dt) {
   }
 }
 
+// ── Feed scatter ──────────────────────────────────────────────────────
+//
+// Clicking empty ground (no bird under the ray) tosses a handful of feed
+// kernels there: a short arc of grain, a dust puff on landing, and nearby
+// idle birds trot over to peck it up. Working birds mid-task, nesting /
+// roosting / sulking birds, and birds fenced into another pen all ignore
+// it — the job comes first. A short cooldown keeps it from being spammed.
+
+const feedPiles = [];
+let lastFeedAt = -Infinity;
+
+// ?feed=<x>,<z> (demo/tests): auto-toss feed at that field spot shortly
+// after load and every ~12s after, so the frenzy can be screenshotted
+// headlessly (a real pointer click isn't reachable from the harness).
+const FEED_PARAM = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get("feed");
+    if (!v) return null;
+    const [x, z] = v.split(",").map(parseFloat);
+    return Number.isFinite(x) && Number.isFinite(z) ? { x, z } : null;
+  } catch (e) {
+    return null;
+  }
+})();
+let feedClock = 0;
+let nextParamFeedAt = FEED_PARAM ? 2 : Infinity;
+
+const KERNEL_COLORS = [0xd9a441, 0xc98f2e, 0xe8c25a];
+
+function penAt(p) {
+  if (!penState) return null;
+  for (const pen of penState.layout.pens) {
+    if (rectContains(pen.rect, p)) return pen;
+  }
+  return null;
+}
+
+/// Birds only cross to feed inside their own territory: same pen, or
+/// both bird and feed out on the commons.
+function feedReachable(c, pos) {
+  if (!penState) return true;
+  return birdPen(c) === penAt({ x: pos.x, z: pos.z });
+}
+
+function eatKernel(pile) {
+  const k = pile.live.pop();
+  if (!k) return;
+  pile.g.remove(k.m);
+  disposeObject(k.m);
+}
+
+function recruitForFeed(pile) {
+  for (const id of Object.keys(flock)) {
+    const c = flock[id];
+    if (c.kind === "chick") continue; // chicks tag along with their parent
+    const idle =
+      c.mode === "wander" || (c.mode === "walk" && c.afterWalk === "wander");
+    if (!idle || c.peckQueue.length) continue;
+    if (c.posV.distanceTo(pile.pos) > FEED_RADIUS) continue;
+    if (!feedReachable(c, pile.pos)) continue;
+    const a = Math.random() * Math.PI * 2;
+    const r = 0.45 + Math.random() * 0.3;
+    c.feedPile = pile;
+    c.routeTo(
+      new Vector3(
+        pile.pos.x + Math.sin(a) * r,
+        0,
+        pile.pos.z + Math.cos(a) * r,
+      ),
+      "feed",
+    );
+  }
+}
+
+function scatterFeed(pos) {
+  if (!scene) return null;
+  const g = new Group();
+  const pile = { g, pos: pos.clone(), live: [], falling: [], t: 0 };
+  for (let i = 0; i < FEED_KERNELS; i++) {
+    const m = new Mesh(
+      new SphereGeometry(0.045, 5, 4),
+      lambert(KERNEL_COLORS[i % KERNEL_COLORS.length]),
+    );
+    m.scale.y = 0.65;
+    m.position.set(pos.x, 0.85, pos.z);
+    const a = Math.random() * Math.PI * 2;
+    const sp = 0.5 + Math.random() * 0.9;
+    pile.falling.push({
+      m,
+      vel: new Vector3(
+        Math.sin(a) * sp,
+        0.6 + Math.random() * 0.9,
+        Math.cos(a) * sp,
+      ),
+    });
+    g.add(m);
+  }
+  scene.add(g);
+  feedPiles.push(pile);
+  return pile;
+}
+
+/// Ground-click entry point: cooldown-gated toss. Recruitment happens
+/// when the first kernel lands (updateFeed).
+function tryScatterFeed(pos, force) {
+  const now = performance.now() / 1000;
+  if (!force && now - lastFeedAt < FEED_COOLDOWN_S) return false;
+  lastFeedAt = now;
+  return !!scatterFeed(pos);
+}
+
+function updateFeed(dt) {
+  feedClock += dt;
+  if (feedClock >= nextParamFeedAt) {
+    nextParamFeedAt = feedClock + 12;
+    tryScatterFeed(new Vector3(FEED_PARAM.x, 0, FEED_PARAM.z), true);
+  }
+  for (let i = feedPiles.length - 1; i >= 0; i--) {
+    const pile = feedPiles[i];
+    pile.t += dt;
+    for (let j = pile.falling.length - 1; j >= 0; j--) {
+      const k = pile.falling[j];
+      k.m.position.addScaledVector(k.vel, dt);
+      k.vel.y -= 6.5 * dt;
+      if (k.vel.y < 0 && k.m.position.y <= 0.03) {
+        k.m.position.y = 0.03;
+        pile.falling.splice(j, 1);
+        pile.live.push(k);
+        if (!pile.landed) {
+          pile.landed = true;
+          spawnPuff(pile.pos);
+          recruitForFeed(pile);
+        }
+      }
+    }
+    // Uneaten leftovers shrink away after a while; eaten-out piles clean
+    // up immediately.
+    const expired = pile.t > FEED_EXPIRE_S;
+    if (expired) {
+      for (const k of pile.live) k.m.scale.multiplyScalar(1 - 1.5 * dt);
+    }
+    if (
+      (!pile.live.length && !pile.falling.length) ||
+      pile.t > FEED_EXPIRE_S + 1
+    ) {
+      scene.remove(pile.g);
+      disposeObject(pile.g);
+      feedPiles.splice(i, 1);
+      for (const id of Object.keys(flock)) {
+        if (flock[id].feedPile === pile) flock[id].feedPile = null;
+      }
+    }
+  }
+}
+
 // ── Chicken controller ────────────────────────────────────────────────
 
 let nestSlots = 0;
@@ -1999,6 +2158,8 @@ class Chicken {
     this.question = null;
     this.answeredQid = null;
     this.celebrateT = 0;
+    this.feedPile = null;
+    this.feedDips = 0;
 
     this.posV = DOOR_POS.clone();
     this.yaw = 0;
@@ -2138,6 +2299,7 @@ class Chicken {
 
   walkTo(v, afterMode) {
     if (this.mode === "roost") this.standUp(); // legs back for the walk
+    if (afterMode !== "feed") this.feedPile = null;
     this.route.length = 0;
     this.target = v.clone();
     this.afterWalk = afterMode;
@@ -2234,6 +2396,7 @@ class Chicken {
 
   noteActivity(activity, toolClass) {
     if (activity > this.activitySeen) {
+      markActive(this);
       const delta = Math.min(activity - this.activitySeen, MAX_QUEUED_PECKS);
       for (let i = 0; i < delta; i++) {
         if (this.peckQueue.length < MAX_QUEUED_PECKS)
@@ -2256,6 +2419,7 @@ class Chicken {
             ? { dips: 1, speed: 3.2, dust: false, tilt: 0.5 }
             : { dips: 1, speed: 4.5, dust: false, tilt: 0 };
     sound.cluck(cls);
+    markActive(this);
     this.pecksPlayed++;
   }
 
@@ -2357,6 +2521,10 @@ class Chicken {
         this.pauseUntil = performance.now() / 1000 + 1 + Math.random() * 2.2;
         if (this.mode === "nest") this.sitDown();
         if (this.mode === "roost") this.sitDown(-0.1);
+        if (this.mode === "feed") {
+          this.peckT = 0;
+          this.feedDips = 0;
+        }
         if (this.mode === "homeArrive" || this.mode === "absorb")
           this.fadeT = 0;
       } else {
@@ -2381,6 +2549,43 @@ class Chicken {
         performance.now() / 1000 > this.pauseUntil
       ) {
         this.routeTo(this.randomFieldPoint(), "wander");
+      }
+    }
+
+    // Feeding: face the pile and peck; each full head dip eats one
+    // kernel. Real work interrupts the meal — queued pecks come first —
+    // and a sated bird (or an empty pile) drifts back to wandering.
+    if (this.mode === "feed") {
+      const pile = this.feedPile;
+      if (
+        !pile ||
+        !pile.live.length ||
+        this.feedDips >= 4 ||
+        this.peckQueue.length
+      ) {
+        this.feedPile = null;
+        this.mode = "wander";
+        this.pauseUntil = performance.now() / 1000 + 0.6 + Math.random();
+        if (viz) viz.neckG.rotation.x = 0;
+      } else {
+        let d =
+          Math.atan2(pile.pos.x - this.posV.x, pile.pos.z - this.posV.z) -
+          this.yaw;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        this.yaw += d * Math.min(1, 6 * dt);
+        const prevDip = Math.floor(this.peckT / Math.PI);
+        this.peckT += dt * 5.2;
+        if (Math.floor(this.peckT / Math.PI) > prevDip) {
+          eatKernel(pile);
+          this.feedDips++;
+        }
+        if (viz) {
+          viz.neckG.rotation.x = Math.abs(Math.sin(this.peckT)) * 1.15;
+          viz.legL.rotation.x = 0;
+          viz.legR.rotation.x = 0;
+          viz.root.position.y = 0;
+        }
       }
     }
 
@@ -3001,6 +3206,23 @@ window.__coopTest = {
     openInfoPopover(c, { clientX: innerWidth / 2, clientY: innerHeight / 2 });
     return true;
   },
+  feed(x, z) {
+    return tryScatterFeed(new Vector3(x, 0, z), true);
+  },
+  feedKernels() {
+    let n = 0;
+    for (const p of feedPiles) n += p.live.length + p.falling.length;
+    return n;
+  },
+  camMode() {
+    return camMode;
+  },
+  setCam(mode) {
+    if (!CAM_MODES.includes(mode)) return false;
+    camMode = mode;
+    camBtn.paint();
+    return true;
+  },
 };
 
 // ── Picking: click a hen with a question to open the Q&A modal ────────
@@ -3027,6 +3249,29 @@ function initPicking() {
     }
     return null;
   };
+  // Where the click ray meets the ground plane (null: sky / off-field).
+  const groundPoint = (ev) => {
+    const rect = renderer.domElement.getBoundingClientRect();
+    pt.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    pt.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pt, camera);
+    const r = raycaster.ray;
+    if (r.direction.y >= -1e-4) return null;
+    const t = -r.origin.y / r.direction.y;
+    const p = new Vector3(
+      r.origin.x + r.direction.x * t,
+      0,
+      r.origin.z + r.direction.z * t,
+    );
+    if (
+      p.x < FIELD.minX ||
+      p.x > FIELD.maxX ||
+      p.z < FIELD.minZ ||
+      p.z > FIELD.maxZ
+    )
+      return null;
+    return p;
+  };
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     const c = pick(ev);
     if (c && c.question) {
@@ -3037,6 +3282,8 @@ function initPicking() {
       openInfoPopover(c, ev);
     } else {
       closeInfoPopover();
+      const gp = groundPoint(ev);
+      if (gp) tryScatterFeed(gp);
     }
   });
   let hoverAt = 0;
@@ -3704,6 +3951,118 @@ const FOCUS_YAW = (() => {
     return null;
   }
 })();
+// ── Camera modes ──────────────────────────────────────────────────────
+//
+// Corner button cycles Free (the classic fixed view) → Follow (a smooth
+// crane shot tracking whichever bird was most recently active) → Chicken
+// Cam (head-height view from that bird with a gentle bob). Escape returns
+// to Free. Every transition eases — no cuts.
+
+const CAM_HOME_POS = new Vector3(0, 9.4, 14.2);
+const CAM_HOME_LOOK = new Vector3(-0.3, 0.2, -1.6);
+const CAM_MODES = ["free", "follow", "chicken"];
+const CAM_LABEL = { free: "🎥 Free", follow: "🎥 Follow", chicken: "🐔 Cam" };
+// ?cam=<free|follow|chicken> (demo/tests): start in that camera mode.
+let camMode = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get("cam");
+    return CAM_MODES.includes(v) ? v : "free";
+  } catch (e) {
+    return "free";
+  }
+})();
+let lastActiveId = null;
+const camPosS = CAM_HOME_POS.clone();
+const camLookS = CAM_HOME_LOOK.clone();
+
+function markActive(c) {
+  lastActiveId = c.cardId;
+}
+
+/// The bird the tracking modes watch: the last one to show tool activity,
+/// else any bird still on the field.
+function activeBird() {
+  const c = lastActiveId ? flock[lastActiveId] : null;
+  if (c && c.viz && c.mode !== "gone") return c;
+  for (const id of Object.keys(flock)) {
+    const o = flock[id];
+    if (o.viz && o.mode !== "gone") return o;
+  }
+  return null;
+}
+
+// Corner camera-mode button, next to the mute toggle.
+const camBtn = (() => {
+  const b = document.createElement("button");
+  b.id = "coop-cam";
+  b.setAttribute("data-testid", "coop-cam");
+  b.title = "Cycle camera mode (Esc: free)";
+  b.style.cssText =
+    "position:fixed;right:54px;bottom:12px;z-index:20;height:34px;" +
+    "padding:0 10px;border:none;border-radius:8px;" +
+    "background:rgba(255,255,255,0.82);font:13px system-ui,sans-serif;" +
+    "color:#333;cursor:pointer;";
+  const paintCam = () => {
+    b.textContent = CAM_LABEL[camMode];
+    b.setAttribute("data-mode", camMode);
+  };
+  b.addEventListener("click", () => {
+    camMode = CAM_MODES[(CAM_MODES.indexOf(camMode) + 1) % CAM_MODES.length];
+    paintCam();
+  });
+  document.body.appendChild(b);
+  paintCam();
+  return { el: b, paint: paintCam };
+})();
+
+// Escape drops back to Free — unless a modal/popover is up, whose own
+// Escape handling wins (closing it shouldn't also yank the camera).
+window.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || camMode === "free") return;
+  if (modalEl && !modalEl.hidden) return;
+  if (popEl && !popEl.hidden) return;
+  camMode = "free";
+  camBtn.paint();
+});
+
+function updateCamera(dt) {
+  if (!renderer || FOCUS_ID) return;
+  let pos = CAM_HOME_POS;
+  let look = CAM_HOME_LOOK;
+  const c = camMode === "free" ? null : activeBird();
+  if (c) {
+    const p = c.posV;
+    if (camMode === "follow") {
+      pos = new Vector3(p.x + 2.6, 3.4, p.z + 4.6);
+      look = new Vector3(p.x, 0.5, p.z);
+    } else {
+      // Chicken Cam: a beak's-eye POV — just ahead of the head (so the
+      // bird's own body stays behind the lens), looking where the bird
+      // looks, with a gentle bob from gait plus a slow idle sway.
+      const bob =
+        Math.sin(c.walkPhase) * 0.03 +
+        Math.sin(performance.now() / 450) * 0.015;
+      const fwd = c.kind === "chick" ? 0.35 : 0.6;
+      const headY = (c.kind === "chick" ? 0.38 : 0.68) + bob;
+      pos = new Vector3(
+        p.x + Math.sin(c.yaw) * fwd,
+        headY,
+        p.z + Math.cos(c.yaw) * fwd,
+      );
+      look = new Vector3(
+        p.x + Math.sin(c.yaw) * 4,
+        0.3 + bob * 0.5,
+        p.z + Math.cos(c.yaw) * 4,
+      );
+    }
+  }
+  const k = 1 - Math.exp(-2.6 * dt);
+  camPosS.lerp(pos, k);
+  camLookS.lerp(look, k);
+  camera.position.copy(camPosS);
+  camera.lookAt(camLookS);
+}
+
 let lastT = performance.now();
 
 function animate() {
@@ -3722,6 +4081,7 @@ function animate() {
   if (dirty) syncMirror();
   updatePuffs(dt);
   updateDayNight();
+  updateFeed(dt);
   if (FOCUS_ID && renderer) {
     // Model-inspection mode: only the focused bird and its family (parent /
     // chicks) stay visible and labels hide, so nothing photobombs the shot.
@@ -3765,6 +4125,7 @@ function animate() {
       camera.lookAt(p.x, lookY, p.z);
     }
   }
+  updateCamera(dt);
   if (renderer) renderer.render(scene, camera);
 }
 
