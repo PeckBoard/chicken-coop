@@ -45,6 +45,7 @@ import {
   WebGLRenderer,
 } from "three";
 import { GATE_W, penLayout, penRoute, rectContains } from "./pens.js";
+import { pecksToQueue, pollDelay } from "./visibility.js";
 
 // ── Layout constants ──────────────────────────────────────────────────
 
@@ -344,7 +345,26 @@ const sound = (() => {
     return muted;
   }
 
-  return { cluck, crow, setDay, toggle, unlock, isMuted: () => muted };
+  // Hidden-tab handling: park the audio thread while backgrounded and pick
+  // it back up on return, but never spin up a context that didn't exist and
+  // never override the mute choice.
+  function suspend() {
+    if (ctx && ctx.state === "running") ctx.suspend();
+  }
+  function resume() {
+    if (!muted && ctx && ctx.state === "suspended") ctx.resume();
+  }
+
+  return {
+    cluck,
+    crow,
+    setDay,
+    toggle,
+    unlock,
+    suspend,
+    resume,
+    isMuted: () => muted,
+  };
 })();
 
 // Corner mute toggle (default muted; choice persists). Created here, like
@@ -2397,11 +2417,13 @@ class Chicken {
   noteActivity(activity, toolClass) {
     if (activity > this.activitySeen) {
       markActive(this);
-      const delta = Math.min(activity - this.activitySeen, MAX_QUEUED_PECKS);
-      for (let i = 0; i < delta; i++) {
-        if (this.peckQueue.length < MAX_QUEUED_PECKS)
-          this.peckQueue.push(toolClass || "other");
-      }
+      const n = pecksToQueue(
+        this.activitySeen,
+        activity,
+        this.peckQueue.length,
+        MAX_QUEUED_PECKS,
+      );
+      for (let i = 0; i < n; i++) this.peckQueue.push(toolClass || "other");
     }
     this.activitySeen = Math.max(this.activitySeen, activity);
   }
@@ -3928,7 +3950,7 @@ async function poll() {
     lastError = String(e && e.message ? e.message : e);
     syncMirror(); // keep HUD honest; hens stay put on transient errors
   } finally {
-    setTimeout(poll, POLL_MS);
+    schedulePoll();
   }
 }
 
@@ -4064,8 +4086,37 @@ function updateCamera(dt) {
 }
 
 let lastT = performance.now();
+let running = false; // main-loop gate: false stops the rAF chain entirely
+let glLost = false; // true between webglcontextlost and webglcontextrestored
+let pollTimer = null;
+
+// Single-timer poll scheduler so hide/show can retarget the cadence without
+// ever stacking two loops. When hidden pollDelay returns null and polling
+// parks entirely (zero background fetches); a fresh poll fires on show.
+function schedulePoll() {
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  const delay = pollDelay(document.hidden, POLL_MS);
+  if (delay !== null) pollTimer = setTimeout(poll, delay);
+}
+
+// Explicit render-loop start/stop so a hidden tab does zero rendering —
+// belt-and-braces over the browser's own rAF throttling. startLoop is
+// idempotent; on restart lastT resets so the first dt isn't a stale gap.
+function startLoop() {
+  if (running) return;
+  running = true;
+  lastT = performance.now();
+  requestAnimationFrame(animate);
+}
+function stopLoop() {
+  running = false;
+}
 
 function animate() {
+  if (!running) return; // stopped while hidden — don't re-arm the loop
   requestAnimationFrame(animate);
   const now = performance.now();
   const dt = Math.min((now - lastT) / 1000, 0.05);
@@ -4126,11 +4177,43 @@ function animate() {
     }
   }
   updateCamera(dt);
-  if (renderer) renderer.render(scene, camera);
+  if (renderer && !glLost) renderer.render(scene, camera);
+}
+
+// Hidden-tab pause + WebGL context-loss guards. Installed after initScene so
+// renderer.domElement exists when WebGL is available at all.
+function installGuards() {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopLoop();
+      sound.suspend();
+      schedulePoll(); // pollDelay(hidden) → null → polling parks
+    } else {
+      sound.resume();
+      startLoop();
+      // One fresh poll now: reconcile despawns/roster before the next frame,
+      // so nothing stale lingers and there's no catch-up burst (the peck cap
+      // holds regardless of how long we were away).
+      poll();
+    }
+  });
+  if (!renderer) return;
+  const canvas = renderer.domElement;
+  canvas.addEventListener("webglcontextlost", (e) => {
+    e.preventDefault(); // required for 'restored' to fire
+    glLost = true; // skip rendering the dead context — no black-canvas flash
+  });
+  canvas.addEventListener("webglcontextrestored", () => {
+    // three.js re-uploads GL resources lazily on the next render; clearing
+    // the flag lets the loop repaint them cleanly.
+    glLost = false;
+    if (!running && !document.hidden) startLoop();
+  });
 }
 
 initScene();
 initPicking();
+installGuards();
 syncMirror();
 poll();
-animate();
+startLoop();
