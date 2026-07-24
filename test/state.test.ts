@@ -425,3 +425,20 @@ describe("buildState — degraded ports", () => {
     expect(state.birds[0].kind).toBe("hen");
   });
 });
+
+describe("buildState — last_activity_ts", () => {
+  it("exposes card updated_at for hens and session last_activity for others", () => {
+    const sessions = [sb({ session_id: "chat", last_activity: ago(60_000) })];
+    const p = port([card({})], {}, sessions);
+    const { birds } = buildState(p, NOW);
+    expect(byId(birds, "c1").last_activity_ts).toBe(
+      Date.parse("2026-07-23T11:59:30Z"),
+    );
+    expect(byId(birds, "chat").last_activity_ts).toBe(NOW - 60_000);
+  });
+
+  it("degrades to null when the timestamp is unparseable", () => {
+    const p = port([card({ updated_at: "not a date" })], {});
+    expect(buildState(p, NOW).birds[0].last_activity_ts).toBeNull();
+  });
+});

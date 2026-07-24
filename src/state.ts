@@ -67,6 +67,9 @@ export interface Bird {
   activity: number;
   last_tool: string | null;
   tool_class: ToolClass | null;
+  /// Epoch ms of the bird's last observed activity — the card's updated_at
+  /// for hens, the session's last_activity otherwise. null when unparseable.
+  last_activity_ts: number | null;
   session_id: string | null;
   question: PendingQuestion | null;
 }
@@ -225,6 +228,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
       tailSession(port, sid, card.id);
     }
 
+    const henLat = parseTs(card.updated_at);
     const entry = activity[card.id];
     birds.push({
       id: card.id,
@@ -242,6 +246,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
       activity: entry ? entry.count : 0,
       last_tool: entry ? entry.lastTool : null,
       tool_class: entry ? entry.lastClass : null,
+      last_activity_ts: Number.isNaN(henLat) ? null : henLat,
       session_id: sid || null,
       question: watching ? questionFor(port, sid) : null,
     });
@@ -293,6 +298,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
     ) => {
       liveBirdIds[s.session_id] = true;
       liveSessionIds[s.session_id] = true;
+      const sessLat = parseTs(s.last_activity);
       const entry = activity[s.session_id];
       birds.push({
         id: s.session_id,
@@ -310,6 +316,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
         activity: entry ? entry.count : 0,
         last_tool: entry ? entry.lastTool : null,
         tool_class: entry ? entry.lastClass : null,
+        last_activity_ts: Number.isNaN(sessLat) ? null : sessLat,
         session_id: s.session_id,
         question: phase === "working" ? questionFor(port, s.session_id) : null,
         ...extra,

@@ -108,6 +108,14 @@ const KIND_LABEL = {
   chick: "subagent",
 };
 
+// Popover-facing breed names, paired with KIND_LABEL for "what is this".
+const BREED_NAME = {
+  hen: "Hen",
+  rooster: "Rooster",
+  barred: "Barred hen",
+  bantam: "Bantam",
+  chick: "Chick",
+};
 /// Blend a plumage color toward chick-down yellow.
 function chickTint(hex) {
   const c = new Color(hex);
@@ -1185,10 +1193,12 @@ function buildLabel(title, subtitle) {
   ctx.fillText(st, 256, 128);
   const tex = new CanvasTexture(canvas);
   const sprite = new Sprite(
-    new SpriteMaterial({ map: tex, transparent: true }),
+    new SpriteMaterial({ map: tex, transparent: true, opacity: 0, depthTest: false }),
   );
   sprite.scale.set(2.3, 0.75, 1);
   sprite.position.y = 2.05;
+  sprite.renderOrder = 9;
+  sprite.visible = false; // hover fades it in (see Chicken.update)
   return sprite;
 }
 
@@ -1278,6 +1288,8 @@ function updatePuffs(dt) {
 // ── Chicken controller ────────────────────────────────────────────────
 
 let nestSlots = 0;
+/// Roster id of the bird under the pointer (name-tag fade target).
+let hoverId = null;
 
 class Chicken {
   constructor(info) {
@@ -1292,6 +1304,9 @@ class Chicken {
     this.phase = info.phase;
     this.activitySeen = info.activity;
     this.lastTool = info.last_tool || null;
+    this.busy = !!info.busy;
+    this.lastActivityTs = info.last_activity_ts || null;
+    this.labelOp = 0;
     this.pecksPlayed = 0;
     this.peckQueue = [];
     this.mode = "emerge";
@@ -1665,6 +1680,14 @@ class Chicken {
       }
     }
 
+    // Hover name tag: fade toward visible only while this bird is hovered.
+    if (this.label) {
+      const want = hoverId === this.cardId && this.mode !== "gone" ? 1 : 0;
+      this.labelOp += (want - this.labelOp) * Math.min(1, dt * 9);
+      if (want === 0 && this.labelOp < 0.02) this.labelOp = 0;
+      this.label.material.opacity = this.labelOp;
+      this.label.visible = this.labelOp > 0.01;
+    }
     // Alert icon: bob + gentle pulse while a question is pending; a short
     // celebratory double-flap right after the user answers.
     if (this.alert && this.alert.visible) {
@@ -1759,6 +1782,7 @@ function demoState(t) {
       last_tool: "Bash",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 42_000,
       question:
         t > 6
           ? {
@@ -1805,6 +1829,7 @@ function demoState(t) {
       last_tool: null,
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 340_000,
     },
     {
       id: "demo-chat",
@@ -1817,6 +1842,7 @@ function demoState(t) {
       last_tool: "search_web",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 8_000,
       question:
         t > 12
           ? {
@@ -1841,6 +1867,7 @@ function demoState(t) {
       last_tool: "read_file",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 1_800_000,
     },
     {
       id: "demo-temp",
@@ -1853,6 +1880,7 @@ function demoState(t) {
       last_tool: "fetch_url",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 125_000,
     },
     // Chicks last: their parents must already be in the flock.
     {
@@ -1868,6 +1896,7 @@ function demoState(t) {
       last_tool: "search_files",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 5_000,
     },
     {
       id: "demo-sub2",
@@ -1882,6 +1911,7 @@ function demoState(t) {
       last_tool: "run_tests",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 9_000,
     },
   ];
   // A rooster chick that periodically finishes and hops back into its parent.
@@ -1900,6 +1930,7 @@ function demoState(t) {
       last_tool: "fetch_url",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 3_000,
     });
   }
   const cycle = t % 30;
@@ -1917,6 +1948,7 @@ function demoState(t) {
       last_tool: "Bash",
       blocked: false,
       busy: true,
+      last_activity_ts: Date.now() - 65_000,
     });
   }
   return { birds };
@@ -1950,6 +1982,8 @@ function reconcile(state) {
       c.setPhase(info.phase);
       c.noteActivity(info.activity, info.tool_class);
       c.lastTool = info.last_tool || c.lastTool;
+      c.busy = !!info.busy;
+      if (info.last_activity_ts) c.lastActivityTs = info.last_activity_ts;
       c.setQuestion(info.question || null);
     }
   }
@@ -2071,6 +2105,16 @@ window.__coopTest = {
     }
     return false;
   },
+  hover(cardId) {
+    hoverId = cardId;
+    return !!flock[cardId];
+  },
+  openInfo(cardId) {
+    const c = flock[cardId];
+    if (!c) return false;
+    openInfoPopover(c, { clientX: innerWidth / 2, clientY: innerHeight / 2 });
+    return true;
+  },
 };
 
 // ── Picking: click a hen with a question to open the Q&A modal ────────
@@ -2099,7 +2143,15 @@ function initPicking() {
   };
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     const c = pick(ev);
-    if (c && c.question) openQuestionModal(c);
+    if (c && c.question) {
+      // A pending question wins over the info popover.
+      closeInfoPopover();
+      openQuestionModal(c);
+    } else if (c) {
+      openInfoPopover(c, ev);
+    } else {
+      closeInfoPopover();
+    }
   });
   let hoverAt = 0;
   renderer.domElement.addEventListener("pointermove", (ev) => {
@@ -2107,7 +2159,11 @@ function initPicking() {
     if (now - hoverAt < 60) return;
     hoverAt = now;
     const c = pick(ev);
-    renderer.domElement.style.cursor = c && c.question ? "pointer" : "default";
+    hoverId = c ? c.cardId : null;
+    renderer.domElement.style.cursor = c ? "pointer" : "default";
+  });
+  renderer.domElement.addEventListener("pointerleave", () => {
+    hoverId = null;
   });
 }
 
@@ -2558,6 +2614,130 @@ function openQuestionModal(chicken) {
   const first = el.querySelector(".coop-opt input, .coop-free");
   if (first) first.focus();
 }
+// ── Info popover: click any bird for identity + status at a glance ────
+
+const POP_CSS =
+  "#coop-pop{position:fixed;z-index:40;width:232px;background:#fdfbf7;color:#2f2a26;" +
+  "border:1px solid #e6ddca;border-radius:12px;box-shadow:0 10px 30px rgba(20,16,8,0.28);" +
+  "font:13px/1.45 system-ui,sans-serif;padding:10px 12px;opacity:0;transform:translateY(4px);" +
+  "transition:opacity 0.14s ease,transform 0.14s ease}" +
+  "#coop-pop.coop-pop-in{opacity:1;transform:translateY(0)}" +
+  "#coop-pop[hidden]{display:none}" +
+  ".coop-pop-name{font-weight:650;font-size:14px;margin-right:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+  ".coop-pop-breed{color:#a07408;font-size:11.5px;font-weight:650;letter-spacing:0.3px;text-transform:uppercase;margin:1px 0 6px}" +
+  ".coop-pop-row{display:flex;gap:8px;margin:2px 0;color:#5c554c}" +
+  ".coop-pop-k{flex:none;width:60px;color:#8a8378;font-size:12px}" +
+  ".coop-pop-v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+  ".coop-pop-x{position:absolute;top:6px;right:6px;border:0;background:none;color:#8a8378;font-size:16px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:6px}" +
+  ".coop-pop-x:hover{background:#f0ebe0;color:#2f2a26}";
+
+let popEl = null;
+
+function ensurePopDom() {
+  if (popEl) return popEl;
+  const style = document.createElement("style");
+  style.textContent = POP_CSS;
+  document.head.appendChild(style);
+  popEl = document.createElement("div");
+  popEl.id = "coop-pop";
+  popEl.setAttribute("data-testid", "coop-info-popover");
+  popEl.style.position = "fixed";
+  popEl.hidden = true;
+  document.body.appendChild(popEl);
+  popEl.addEventListener("click", (e) => {
+    if (e.target && e.target.closest && e.target.closest(".coop-pop-x"))
+      closeInfoPopover();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeInfoPopover();
+  });
+  // Click-outside closes. Canvas clicks are excluded: picking decides
+  // there (another bird reopens, empty ground closes).
+  window.addEventListener("pointerdown", (e) => {
+    if (popEl.hidden || popEl.contains(e.target)) return;
+    if (renderer && e.target === renderer.domElement) return;
+    closeInfoPopover();
+  });
+  return popEl;
+}
+
+function closeInfoPopover() {
+  if (popEl) {
+    popEl.hidden = true;
+    popEl.classList.remove("coop-pop-in");
+  }
+}
+
+/// Rough age wording for the popover's "seen" row.
+function fmtAge(ts) {
+  if (!ts) return "unknown";
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 45) return "just now";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 129600) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+/// Popover phase wording: the run-level view (walking home / idle), not
+/// the raw card step.
+function popPhase(c) {
+  if (c.phase === "done" || c.phase === "wont_do" || c.mode === "homeArrive")
+    return "walking home";
+  if (c.phase === "testing") return "testing";
+  return c.busy || c.peckQueue.length > 0 || c.mode === "peck"
+    ? "working"
+    : "idle";
+}
+
+function openInfoPopover(chicken, ev) {
+  const el = ensurePopDom();
+  const breed =
+    (BREED_NAME[chicken.kind] || chicken.kind) +
+    " · " +
+    (KIND_LABEL[chicken.kind] || "session");
+  const acts =
+    chicken.activitySeen > 0
+      ? chicken.activitySeen +
+        " tool call" +
+        (chicken.activitySeen === 1 ? "" : "s") +
+        (chicken.lastTool ? " · " + chicken.lastTool : "")
+      : "none yet";
+  const rows = [
+    ["phase", popPhase(chicken)],
+    ["project", chicken.project || "—"],
+    ["activity", acts],
+    ["seen", fmtAge(chicken.lastActivityTs)],
+  ];
+  el.innerHTML =
+    '<button type="button" class="coop-pop-x" aria-label="Close">×</button>' +
+    '<div class="coop-pop-name">' +
+    escapeHtml(chicken.title || "") +
+    "</div>" +
+    '<div class="coop-pop-breed">' +
+    escapeHtml(breed) +
+    "</div>" +
+    rows
+      .map(
+        (r) =>
+          '<div class="coop-pop-row"><span class="coop-pop-k">' +
+          r[0] +
+          '</span><span class="coop-pop-v">' +
+          escapeHtml(r[1]) +
+          "</span></div>",
+      )
+      .join("");
+  el.hidden = false;
+  // Place near the click, clamped to the viewport (measure after unhide).
+  const W = 232;
+  const pad = 10;
+  const x = Math.min(Math.max(ev.clientX + 12, pad), innerWidth - W - pad);
+  el.style.left = x + "px";
+  el.style.top = pad + "px";
+  const h = el.offsetHeight || 150;
+  const y = Math.min(Math.max(ev.clientY + 12, pad), innerHeight - h - pad);
+  el.style.top = y + "px";
+  requestAnimationFrame(() => el.classList.add("coop-pop-in"));
+}
 // ── Poll + main loop ──────────────────────────────────────────────────
 
 let demoClock = 0;
@@ -2583,6 +2763,27 @@ async function poll() {
       ) {
         window.__demoChatQuestionOpened = true;
         openQuestionModal(dc);
+      }
+      // Showcase the identity UI: sweep the hover name tag across the
+      // flock (a real pointer re-picks on the next mouse move), and open
+      // one info popover once the question modals are out of the way.
+      if (!FOCUS_ID) {
+        const ids = Object.keys(flock).filter(
+          (id) => flock[id].mode !== "gone",
+        );
+        if (ids.length) hoverId = ids[Math.floor(demoClock / 4) % ids.length];
+        if (
+          demoClock > 17 &&
+          !window.__demoInfoOpened &&
+          (!modalEl || modalEl.hidden) &&
+          flock["demo-cron"]
+        ) {
+          window.__demoInfoOpened = true;
+          openInfoPopover(flock["demo-cron"], {
+            clientX: innerWidth * 0.6,
+            clientY: innerHeight * 0.3,
+          });
+        }
       }
     } else {
       const res = await apiFetch("/api/plugin-ui/chicken-coop/state");

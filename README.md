@@ -40,6 +40,13 @@ exactly as long as `subagent_completed_at` is unset.
     clicking her opens a Q&A modal with the question, its options, and enough
     context to answer (card title/description, project, a workflow-position
     diagram, recent tool activity).
+- **Identity UI**: hovering any bird fades in a hand-painted name tag
+  (card title / session label, project underneath); clicking any bird opens
+  a small info popover — breed and session kind, phase (working / testing /
+  walking home / idle), project, last tool + activity count, and
+  last-activity age (from the state payload's `last_activity_ts`). A bird
+  with a pending question badge opens the Q&A modal instead; Escape or
+  click-outside closes either.
 - **Answer** (`POST /api/plugin-ui/chicken-coop/answer`, authed): body
   `{session_id, question_id, answers, rejected}`. Validated in the wasm, then
   resolved via `peckboard_answer_question`, which runs core's own
@@ -69,8 +76,9 @@ hide), `&yaw=<radians>` poses it at a fixed heading in the open field, and
 `?err=1` throws a probe error — uncaught errors render into a visible
 `#coop-errors` box (`data-count` attribute) since the harness can't read the
 console.
-
-The build is two-stage: `page/main.js` (+ three.js) is bundled/minified first
+The standalone demo (`npm run demo`, open `.demo/coop-demo.html`) shows every
+breed plus chicks, with hover name tags and the click info popover working on
+the demo roster. Query params for browser-driven verification:
 and embedded as a JSON-escaped string in `src/generated/pageBundle.ts`, then
 the plugin itself is bundled CJS/es2020 and compiled by `extism-js` to
 `dist/plugin.wasm`.
