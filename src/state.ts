@@ -123,6 +123,41 @@ export function phaseForCard(card: Card, nowMs: number): Phase | null {
   return step === "in_progress" ? "working" : "testing";
 }
 
+/// Eggs on the ground: cards that reached done within the session horizon
+/// (the coop's "today"). wont_do lays no egg.
+export function countEggs(cards: Card[], nowMs: number): number {
+  let n = 0;
+  for (const c of cards) {
+    if (c.step !== "done") continue;
+    const ts = parseTs(c.completed_at) || parseTs(c.updated_at);
+    if (!Number.isNaN(ts) && nowMs - ts < SESSION_HORIZON_MS) n++;
+  }
+  return n;
+}
+
+/// A per-UTC-day counter (day = epoch days). Rolls to zero-plus-`n` when
+/// the day changes.
+export interface DailyCount {
+  day: number;
+  count: number;
+}
+
+/// Fold `n` newly observed tool starts into the daily counter.
+export function bumpDaily(
+  prev: DailyCount,
+  nowMs: number,
+  n: number,
+): DailyCount {
+  const day = Math.floor(nowMs / 86_400_000);
+  return day === prev.day ? { day, count: prev.count + n } : { day, count: n };
+}
+
+/// The stats-board payload: eggs laid (cards done) and tool calls today.
+export interface CoopStats {
+  eggs: number;
+  tool_calls: number;
+}
+
 /// Breed for a non-worker session. Worker sessions never reach this (their
 /// card hen covers them).
 export function kindForSession(s: SessionBrief): BirdKind {
@@ -145,16 +180,23 @@ interface ActivityEntry {
 const cursors: Record<string, number> = {};
 const activity: Record<string, ActivityEntry> = {};
 const pendingQ: Record<string, number> = {};
+// Tool calls observed today across every tailed session (UTC day). Counted
+// from the same slim-event tails as pecks, so a cache rebuild replays the
+// retained history of still-live sessions into the day's count — same
+// approximation the catch-up pecks accept.
+let dailyTools: DailyCount = { day: -1, count: 0 };
 
 export function resetStateCache(): void {
   for (const k of Object.keys(cursors)) delete cursors[k];
   for (const k of Object.keys(activity)) delete activity[k];
   for (const k of Object.keys(pendingQ)) delete pendingQ[k];
+  dailyTools = { day: -1, count: 0 };
 }
 
 /// Tail one session's slim events: bump the bird's activity on tool starts,
-/// and keep the session's pending-question counter in sync.
-function tailSession(port: HostPort, sid: string, birdId: string): void {
+/// and keep the session's pending-question counter in sync. Returns the
+/// number of tool starts observed, for the daily counter.
+function tailSession(port: HostPort, sid: string, birdId: string): number {
   const tail = port.sessionEvents(sid, cursors[sid] ?? 0);
   if (tail.latest_seq !== null) cursors[sid] = tail.latest_seq;
   let q = pendingQ[sid] ?? 0;
@@ -176,6 +218,7 @@ function tailSession(port: HostPort, sid: string, birdId: string): void {
     entry.lastTool = last.name || null;
     entry.lastClass = classifyTool(last.name);
   }
+  return tools.length;
 }
 
 /// Fetch the oldest pending question for a session, but only when the tail
@@ -201,12 +244,16 @@ function questionFor(
 
 /// One poll: cards + sessions → birds, tailing each live bird's session for
 /// new tool events and pending questions.
-export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
+export function buildState(
+  port: HostPort,
+  nowMs: number,
+): { birds: Bird[]; stats: CoopStats } {
   const cards = port.listCards();
   const projectNames: Record<string, string> = {};
   for (const p of port.listProjects()) projectNames[p.id] = p.name;
 
   const birds: Bird[] = [];
+  let toolStarts = 0;
   const liveBirdIds: Record<string, boolean> = {};
   const liveSessionIds: Record<string, boolean> = {};
   /// worker session id → hen roster id, for chick parent resolution.
@@ -225,7 +272,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
     const watching = !!sid && (phase === "working" || phase === "testing");
     if (sid && watching) {
       liveSessionIds[sid] = true;
-      tailSession(port, sid, card.id);
+      toolStarts += tailSession(port, sid, card.id);
     }
 
     const henLat = parseTs(card.updated_at);
@@ -328,7 +375,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
       const kind = kindForSession(s);
       // Tail before deciding: the pending-question counter must reflect the
       // log even for a session that just went quiet.
-      tailSession(port, s.session_id, s.session_id);
+      toolStarts += tailSession(port, s.session_id, s.session_id);
       liveSessionIds[s.session_id] = true; // keep cursor across asleep polls
       const alive =
         age < SESSION_STALE_MS ||
@@ -343,7 +390,7 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
     }
 
     for (const s of liveChicks.concat(doneChicks)) {
-      tailSession(port, s.session_id, s.session_id);
+      toolStarts += tailSession(port, s.session_id, s.session_id);
       const phase: Phase =
         s.subagent_completed_at === null ? "working" : "done";
       const parentSid = s.parent_session_id;
@@ -371,5 +418,9 @@ export function buildState(port: HostPort, nowMs: number): { birds: Bird[] } {
     if (!liveSessionIds[id]) delete pendingQ[id];
   }
 
-  return { birds };
+  dailyTools = bumpDaily(dailyTools, nowMs, toolStarts);
+  return {
+    birds,
+    stats: { eggs: countEggs(cards, nowMs), tool_calls: dailyTools.count },
+  };
 }

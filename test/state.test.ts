@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   buildState,
+  bumpDaily,
   classifyTool,
+  countEggs,
   kindForSession,
   parseTs,
   phaseForCard,
   resetStateCache,
+  SESSION_HORIZON_MS,
   SESSION_STALE_MS,
   TERMINAL_LINGER_MS,
   type Bird,
@@ -440,5 +443,81 @@ describe("buildState — last_activity_ts", () => {
   it("degrades to null when the timestamp is unparseable", () => {
     const p = port([card({ updated_at: "not a date" })], {});
     expect(buildState(p, NOW).birds[0].last_activity_ts).toBeNull();
+  });
+});
+
+describe("countEggs", () => {
+  it("counts done cards within the horizon; wont_do lays no egg", () => {
+    const cards = [
+      card({ id: "d1", step: "done", completed_at: ago(60_000) }),
+      card({ id: "d2", step: "done", completed_at: ago(3_600_000) }),
+      card({ id: "w1", step: "wont_do", completed_at: ago(60_000) }),
+      card({ id: "b1", step: "backlog" }),
+      card({ id: "p1", step: "in_progress" }),
+    ];
+    expect(countEggs(cards, NOW)).toBe(2);
+  });
+
+  it("drops eggs past the horizon, falling back to updated_at", () => {
+    const stale = card({
+      id: "d1",
+      step: "done",
+      completed_at: ago(SESSION_HORIZON_MS + 1000),
+    });
+    expect(countEggs([stale], NOW)).toBe(0);
+    const noStamp = card({
+      id: "d2",
+      step: "done",
+      completed_at: null,
+      updated_at: ago(120_000),
+    });
+    expect(countEggs([noStamp], NOW)).toBe(1);
+  });
+});
+
+describe("bumpDaily", () => {
+  it("accumulates within a day and resets on rollover", () => {
+    let d = bumpDaily({ day: -1, count: 0 }, NOW, 3);
+    expect(d.count).toBe(3);
+    d = bumpDaily(d, NOW + 60_000, 2);
+    expect(d.count).toBe(5);
+    d = bumpDaily(d, NOW + 86_400_000, 4);
+    expect(d.count).toBe(4);
+  });
+});
+
+describe("buildState — stats", () => {
+  it("reports eggs and accumulates tool calls across polls", () => {
+    const tails: Record<string, SlimEvent[]> = {
+      s1: [
+        { seq: 1, kind: "agent-tool-start", name: "Bash" },
+        { seq: 2, kind: "agent-tool-start", name: "Edit" },
+      ],
+    };
+    const cards = [
+      card({}),
+      card({ id: "d1", step: "done", completed_at: ago(60_000) }),
+    ];
+    const p = port(cards, tails);
+
+    let state = buildState(p, NOW);
+    expect(state.stats).toEqual({ eggs: 1, tool_calls: 2 });
+
+    tails.s1.push({ seq: 3, kind: "agent-tool-start", name: "Read" });
+    state = buildState(p, NOW + 1000);
+    expect(state.stats.tool_calls).toBe(3);
+
+    // Next UTC day: the counter starts over.
+    state = buildState(p, NOW + 86_400_000);
+    expect(state.stats.tool_calls).toBe(0);
+  });
+});
+
+describe("buildState — blocked", () => {
+  it("passes a card's blocked flag through to its hen", () => {
+    const p = port([card({ blocked: true })], {});
+    expect(buildState(p, NOW).birds[0].blocked).toBe(true);
+    const clear = port([card({})], {});
+    expect(buildState(clear, NOW).birds[0].blocked).toBe(false);
   });
 });

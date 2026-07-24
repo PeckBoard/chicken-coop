@@ -51,6 +51,9 @@ const COOP_POS = new Vector3(-9.6, 0, -2.2);
 const DOOR_POS = new Vector3(-7.8, 0, -1.2); // just outside the coop door
 const NEST_BASE = new Vector3(9.0, 0, -4.6); // nests fan out along +z
 const NEST_GAP = 2.1;
+const FENCE_X = 10.85; // blocked hens sulk here, facing out through the rails
+const EGG_PATCH = new Vector3(7.1, 0, -2.8); // laid eggs collect by the nests
+const MAX_LOOSE_EGGS = 12; // past a dozen, extras stack into a pile
 const WALK_SPEED = 1.7;
 const HOME_SPEED = 2.4;
 const POLL_MS = 1000;
@@ -557,6 +560,7 @@ function buildWorld() {
 
   buildCoop(T);
   buildFence(T);
+  buildStatsBoard(T);
 
   // Grass tufts, bushes, flowers — deterministic scatter.
   const rnd = mulberry32(20260723);
@@ -883,6 +887,151 @@ function buildNest() {
   return g;
 }
 
+// ── Eggs & daily stats board ──────────────────────────────────────────
+//
+// Done cards leave eggs by the nests (a loose dozen, then a pile) and the
+// day's tallies go up on a painted wooden board beside the coop.
+
+let eggGroup = null;
+let eggCount = -1;
+
+function syncEggs(count) {
+  if (!scene || count === eggCount) return;
+  const fresh = eggCount >= 0 && count > eggCount;
+  eggCount = count;
+  if (eggGroup) {
+    scene.remove(eggGroup);
+    disposeObject(eggGroup);
+    eggGroup = null;
+  }
+  if (count > 0) {
+    eggGroup = new Group();
+    const rnd = mulberry32(9871231);
+    const shellM = [lambert(0xfdf6e3), lambert(0xf3e4c2), lambert(0xf7ead0)];
+    const egg = (x, y, z, i) => {
+      const e = new Mesh(
+        new SphereGeometry(0.13 + (i % 3) * 0.012, 12, 10),
+        shellM[i % 3],
+      );
+      e.scale.y = 1.3;
+      e.position.set(x, y, z);
+      e.rotation.set((rnd() - 0.5) * 0.5, rnd() * Math.PI, (rnd() - 0.5) * 0.5);
+      e.castShadow = true;
+      eggGroup.add(e);
+    };
+    for (let i = 0; i < Math.min(count, MAX_LOOSE_EGGS); i++) {
+      const a = rnd() * Math.PI * 2;
+      const r = 0.35 + rnd() * 1.25;
+      egg(Math.cos(a) * r, 0.13, Math.sin(a) * r * 0.75, i);
+    }
+    if (count > MAX_LOOSE_EGGS) {
+      // Overflow: a tidy little pile standing in for the extras.
+      const pile = [
+        [0, 0],
+        [0.24, 0.05],
+        [-0.22, 0.1],
+        [0.04, -0.22],
+        [-0.1, 0.28],
+      ];
+      for (let i = 0; i < pile.length; i++)
+        egg(2.0 + pile[i][0], 0.13, -0.5 + pile[i][1], i);
+      egg(2.01, 0.36, -0.42, 1);
+      egg(1.95, 0.36, -0.55, 2);
+    }
+    eggGroup.position.copy(EGG_PATCH);
+    scene.add(eggGroup);
+  }
+  if (fresh) spawnPuff(EGG_PATCH.clone()); // a new egg just landed
+}
+
+// The daily stats board: a wooden sign beside the coop — painted egg and
+// hammer tallies, repainted only when the numbers change.
+let statsCanvas = null;
+let statsTex = null;
+let statsShown = null;
+
+function paintStatsBoard(eggs, tools) {
+  const ctx = statsCanvas.getContext("2d");
+  const rnd = mulberry32(661991);
+  drawWood(ctx, statsCanvas.width, statsCanvas.height, 0x8f6b4a, 4, false, rnd);
+  ctx.fillStyle = "#f6efdf";
+  // Egg tally: a painted egg and today's count.
+  ctx.save();
+  ctx.translate(64, 46);
+  ctx.scale(1, 1.28);
+  ctx.beginPath();
+  ctx.arc(0, 0, 20, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.font = "700 52px Georgia, serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(eggs), 104, 50);
+  // Tool-call tally: a painted hammer and the count.
+  ctx.save();
+  ctx.translate(62, 118);
+  ctx.rotate(-0.5);
+  ctx.fillRect(-5, -8, 10, 40); // handle
+  ctx.fillRect(-20, -22, 40, 16); // head
+  ctx.restore();
+  ctx.fillText(String(tools), 104, 118);
+}
+
+function updateStatsBoard(eggs, tools) {
+  if (!statsCanvas) return;
+  const key = eggs + "/" + tools;
+  if (key === statsShown) return;
+  statsShown = key;
+  paintStatsBoard(eggs, tools);
+  statsTex.needsUpdate = true;
+}
+
+function buildStatsBoard(T) {
+  statsCanvas = document.createElement("canvas");
+  statsCanvas.width = 256;
+  statsCanvas.height = 160;
+  paintStatsBoard(0, 0);
+  statsShown = "0/0";
+  statsTex = new CanvasTexture(statsCanvas);
+  statsTex.colorSpace = SRGBColorSpace;
+
+  const g = new Group();
+  const postMat = lambertMap(T.post);
+  for (const side of [-1, 1]) {
+    const post = new Mesh(new CylinderGeometry(0.06, 0.075, 1.5, 7), postMat);
+    post.position.set(side * 0.78, 0.75, -0.08);
+    post.castShadow = true;
+    g.add(post);
+  }
+  const plankMat = lambertMap(T.floor);
+  const board = new Mesh(new BoxGeometry(1.9, 1.15, 0.08), [
+    plankMat,
+    plankMat,
+    plankMat,
+    plankMat,
+    lambertMap(statsTex),
+    plankMat,
+  ]);
+  board.position.y = 1.35;
+  board.castShadow = true;
+  board.receiveShadow = true;
+  g.add(board);
+  const cap = boxMap(2.05, 0.09, 0.14, plankMat);
+  cap.position.y = 1.97;
+  g.add(cap);
+  g.position.set(-6.3, 0, 2.7);
+  g.rotation.y = 0.22;
+  scene.add(g);
+}
+
+/// Roster-level stats from the state payload → eggs on the ground + board.
+function syncStats(stats) {
+  if (!stats) return;
+  window.__coopStats = stats;
+  syncEggs(stats.eggs || 0);
+  updateStatsBoard(stats.eggs || 0, stats.tool_calls || 0);
+}
+
 // ── Chicken model ─────────────────────────────────────────────────────
 //
 // Rounded birds out of ellipsoids with feather textures, parameterized by
@@ -1193,7 +1342,12 @@ function buildLabel(title, subtitle) {
   ctx.fillText(st, 256, 128);
   const tex = new CanvasTexture(canvas);
   const sprite = new Sprite(
-    new SpriteMaterial({ map: tex, transparent: true, opacity: 0, depthTest: false }),
+    new SpriteMaterial({
+      map: tex,
+      transparent: true,
+      opacity: 0,
+      depthTest: false,
+    }),
   );
   sprite.scale.set(2.3, 0.75, 1);
   sprite.position.y = 2.05;
@@ -1231,6 +1385,37 @@ function buildAlertIcon() {
   sprite.visible = false;
   return sprite;
 }
+// A little wooden stop stake planted beside a blocked hen: post plus a
+// painted red octagon with a cream bar — no text, the paint carries it.
+function buildBlockedStake() {
+  const T = ensureTextures();
+  const g = new Group();
+  const post = new Mesh(
+    new CylinderGeometry(0.045, 0.06, 0.95, 7),
+    lambertMap(T.post),
+  );
+  post.position.y = 0.47;
+  post.castShadow = true;
+  g.add(post);
+  const disc = new Mesh(
+    new CylinderGeometry(0.21, 0.21, 0.05, 8),
+    lambert(0xb0402c),
+  );
+  disc.rotation.x = Math.PI / 2;
+  disc.position.y = 1.0;
+  disc.castShadow = true;
+  g.add(disc);
+  for (const side of [-1, 1]) {
+    const bar = new Mesh(
+      new BoxGeometry(0.24, 0.065, 0.012),
+      lambert(0xf6efdf),
+    );
+    bar.position.set(0, 1.0, side * 0.032);
+    g.add(bar);
+  }
+  return g;
+}
+
 function disposeObject(obj) {
   obj.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
@@ -1305,6 +1490,9 @@ class Chicken {
     this.activitySeen = info.activity;
     this.lastTool = info.last_tool || null;
     this.busy = !!info.busy;
+    this.blocked = false;
+    this.stake = null;
+    this.fencePos = null;
     this.lastActivityTs = info.last_activity_ts || null;
     this.labelOp = 0;
     this.pecksPlayed = 0;
@@ -1375,6 +1563,7 @@ class Chicken {
     }
     if (info.phase === "testing") this.goNest();
     if (info.phase === "done" || info.phase === "wont_do") this.goHome();
+    if (info.blocked) this.setBlocked(true);
   }
 
   // question: {id, session_id, data} | null — drives the alert icon. A
@@ -1384,6 +1573,43 @@ class Chicken {
     if (q && this.answeredQid === q.id) q = null;
     this.question = q || null;
     if (this.alert) this.alert.visible = !!this.question;
+  }
+
+  // Blocked cards: the hen trudges to the fence, faces out through the
+  // rails, and mopes by a stop stake until the card unblocks. Only field
+  // hens sulk — a nesting (testing) hen stays on her nest.
+  setBlocked(b) {
+    b = !!b;
+    if (b === this.blocked) return;
+    this.blocked = b;
+    if (b) {
+      if (this.phase !== "working") return;
+      const rnd = mulberry32(hashStr(this.cardId) ^ 0x5bf035);
+      this.fencePos = new Vector3(FENCE_X, 0, -3.4 + rnd() * 8.4);
+      if (scene && !this.stake) {
+        this.stake = buildBlockedStake();
+        this.stake.position.set(FENCE_X - 0.15, 0, this.fencePos.z - 0.8);
+        this.stake.rotation.y = -0.5;
+        scene.add(this.stake);
+      }
+      this.peckQueue.length = 0;
+      this.peckPlan = null;
+      this.walkTo(this.fencePos, "sulk");
+    } else {
+      this.removeStake();
+      if (this.mode === "sulk" || this.afterWalk === "sulk") {
+        this.walkTo(this.randomFieldPoint(), "wander");
+      }
+    }
+  }
+
+  removeStake() {
+    if (this.stake && scene) {
+      scene.remove(this.stake);
+      disposeObject(this.stake);
+    }
+    this.stake = null;
+    if (this.viz) this.viz.bodyG.rotation.x = 0; // undo the sulk hunch
   }
 
   randomFieldPoint(rnd) {
@@ -1414,11 +1640,17 @@ class Chicken {
       (prev === "testing" || prev === "done" || prev === "wont_do")
     ) {
       this.leaveNest();
-      this.walkTo(this.randomFieldPoint(), "wander");
+      if (this.blocked) {
+        this.blocked = false; // replant: re-run the fence walk
+        this.setBlocked(true);
+      } else {
+        this.walkTo(this.randomFieldPoint(), "wander");
+      }
     }
   }
 
   goNest() {
+    this.removeStake();
     if (!this.nestPos) {
       const slot = nestSlots++;
       this.nestPos = new Vector3(
@@ -1451,6 +1683,7 @@ class Chicken {
 
   goHome() {
     this.leaveNest();
+    this.removeStake();
     this.peckQueue.length = 0;
     this.peckPlan = null;
     // A finishing chick delivers its result: run to the parent and vanish
@@ -1627,6 +1860,20 @@ class Chicken {
       viz.bodyG.rotation.z = Math.sin(performance.now() / 900) * 0.03;
     }
 
+    // Blocked: stand at the fence facing out (+x), hunched, head hung,
+    // wings slumped. removeStake undoes the hunch when the sulk ends.
+    if (this.mode === "sulk" && viz) {
+      let d = Math.PI / 2 - this.yaw;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      this.yaw += d * Math.min(1, 4 * dt);
+      viz.neckG.rotation.x = 0.6 + Math.sin(performance.now() / 1100) * 0.05;
+      viz.bodyG.rotation.x = 0.16;
+      viz.wingL.rotation.z = -0.34;
+      viz.wingR.rotation.z = 0.34;
+      viz.legL.rotation.x = 0;
+      viz.legR.rotation.x = 0;
+    }
     // Arrived home: shrink into the doorway, then remove.
     if (this.mode === "homeArrive") {
       this.fadeT += dt;
@@ -1719,6 +1966,7 @@ class Chicken {
   dispose() {
     this.removed = true;
     this.leaveNest();
+    this.removeStake();
     if (this.viz && scene) {
       scene.remove(this.viz.root);
       disposeObject(this.viz.root);
@@ -1830,6 +2078,21 @@ function demoState(t) {
       blocked: false,
       busy: true,
       last_activity_ts: Date.now() - 340_000,
+    },
+    {
+      id: "demo-blocked",
+      card_id: "demo-blocked",
+      kind: "hen",
+      project_name: "demo",
+      title: "Waiting on schema card",
+      step: "in_progress",
+      phase: "working",
+      activity: 0,
+      tool_class: null,
+      last_tool: null,
+      blocked: true,
+      busy: false,
+      last_activity_ts: Date.now() - 600_000,
     },
     {
       id: "demo-chat",
@@ -1951,7 +2214,7 @@ function demoState(t) {
       last_activity_ts: Date.now() - 65_000,
     });
   }
-  return { birds };
+  return { birds, stats: { eggs: 14, tool_calls: 262 } };
 }
 
 // ── Reconciler + mirror ───────────────────────────────────────────────
@@ -1967,6 +2230,7 @@ let lastError = null;
 const goneIds = {};
 
 function reconcile(state) {
+  syncStats(state.stats);
   const seen = {};
   for (const info of state.birds || state.chickens || []) {
     const id = info.id || info.card_id;
@@ -1984,6 +2248,7 @@ function reconcile(state) {
       c.lastTool = info.last_tool || c.lastTool;
       c.busy = !!info.busy;
       if (info.last_activity_ts) c.lastActivityTs = info.last_activity_ts;
+      c.setBlocked(!!info.blocked);
       c.setQuestion(info.question || null);
     }
   }
@@ -2002,6 +2267,7 @@ function syncMirror() {
   let working = 0;
   let testing = 0;
   let questions = 0;
+  let blockedN = 0;
   const extras = { rooster: 0, chick: 0, barred: 0, bantam: 0 };
   for (const id of Object.keys(flock)) {
     const c = flock[id];
@@ -2014,6 +2280,7 @@ function syncMirror() {
     }
     if (c.kind === "hen") {
       hens++;
+      if (c.blocked) blockedN++;
       if (c.phase === "working") working++;
       if (c.phase === "testing") testing++;
     } else if (extras[c.kind] !== undefined) {
@@ -2028,6 +2295,7 @@ function syncMirror() {
       mirrorEl.appendChild(el);
     }
     el.setAttribute("data-kind", c.kind);
+    el.setAttribute("data-blocked", c.blocked ? "1" : "");
     el.setAttribute("data-phase", c.phase);
     el.setAttribute("data-anim", c.mode);
     el.setAttribute("data-activity", String(c.activitySeen));
@@ -2045,6 +2313,7 @@ function syncMirror() {
       activity: c.activitySeen,
       pecks: c.pecksPlayed,
       question: c.question ? c.question.id : null,
+      blocked: !!c.blocked,
     });
   }
   window.__coopState = rows;
@@ -2061,6 +2330,7 @@ function syncMirror() {
     extraBits.push(
       extras.bantam + " bantam" + (extras.bantam === 1 ? "" : "s"),
     );
+  if (blockedN) extraBits.push(blockedN + " blocked");
   hudEl.textContent =
     (renderer ? "" : "(no WebGL — roster only) ") +
     (lastError ? "reconnecting… " : "") +

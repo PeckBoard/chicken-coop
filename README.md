@@ -40,6 +40,13 @@ exactly as long as `subagent_completed_at` is unset.
     clicking her opens a Q&A modal with the question, its options, and enough
     context to answer (card title/description, project, a workflow-position
     diagram, recent tool activity).
+  - blocked cards: a blocked hen trudges to the fence and mopes there —
+    hunched, head hung, wings slumped — beside a little painted stop stake;
+    she rejoins the flock the moment the card unblocks.
+- **Eggs & daily stats**: cards reaching done leave eggs by the nests for the
+  24h horizon — a loose dozen, then a pile (wont_do lays nothing) — and a
+  painted wooden board beside the coop tallies eggs (cards done) and tool
+  calls today (the `stats` object in the state payload).
 - **Identity UI**: hovering any bird fades in a hand-painted name tag
   (card title / session label, project underneath); clicking any bird opens
   a small info popover — breed and session kind, phase (working / testing /
