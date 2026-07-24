@@ -44,6 +44,7 @@ import {
   Vector3,
   WebGLRenderer,
 } from "three";
+import { GATE_W, penLayout, penRoute, rectContains } from "./pens.js";
 
 // ── Layout constants ──────────────────────────────────────────────────
 
@@ -1161,6 +1162,182 @@ function buildFence(T) {
   addRails(13.3, 11.5, -0.55, Math.PI / 2);
 }
 
+// ── Project pens ──────────────────────────────────────────────────────
+//
+// When the live birds span 2+ projects the field splits into fenced pens,
+// one per project (layout math in pens.js). Coop and nests stay shared:
+// birds path through their pen's gate and along the commons corridor.
+// The pen area stops short of the egg patch so the east lane to the
+// nests stays open.
+
+const PEN_FIELD = {
+  minX: FIELD.minX,
+  maxX: 6.4,
+  minZ: FIELD.minZ,
+  maxZ: FIELD.maxZ,
+};
+let penState = null; // {sig, layout, byKey} — null: single-project open run
+let penGroup = null; // fence/gate/sign meshes for the current layout
+
+/// The pen a bird belongs to (null = commons). Chicks stay in their
+/// parent's pen.
+function birdPen(c) {
+  if (!penState) return null;
+  if (c.kind === "chick" && c.parentId && flock[c.parentId])
+    return birdPen(flock[c.parentId]);
+  return penState.byKey[c.project] || null;
+}
+
+/// The rectangle a bird wanders in: its pen, the commons strip, or the
+/// whole field when no pens are up.
+function wanderRect(c) {
+  if (!penState) return FIELD;
+  const pen = birdPen(c);
+  return pen ? pen.rect : penState.layout.commons;
+}
+
+// Small procedural wooden sign: post plus a wood-grain board with the
+// project name painted on, facing the camera.
+function buildPenSign(text) {
+  const T = ensureTextures();
+  const g = new Group();
+  const post = new Mesh(
+    new CylinderGeometry(0.05, 0.065, 1.05, 7),
+    lambertMap(T.post),
+  );
+  post.position.y = 0.52;
+  post.castShadow = true;
+  g.add(post);
+  const rnd = mulberry32(hashStr("sign:" + text));
+  const tex = makeTexture(256, 96, (ctx, w, h) => {
+    drawWood(ctx, w, h, 0x8a6a44, 3, false, rnd);
+    ctx.fillStyle = "#2b1c0f";
+    ctx.font = "700 40px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const t = text.length > 13 ? text.slice(0, 12) + "…" : text;
+    ctx.fillText(t, w / 2, h / 2 + 2);
+  });
+  const board = new Mesh(new BoxGeometry(1.45, 0.5, 0.06), lambertMap(tex));
+  board.position.y = 1.05;
+  board.castShadow = true;
+  g.add(board);
+  return g;
+}
+
+// Fences, swung-open gates, and signs for a pen layout. Same split-rail
+// style as the outer fence, a touch shorter so the field stays readable.
+function buildPenFences(layout) {
+  const T = ensureTextures();
+  penGroup = new Group();
+  const postMat = lambertMap(T.post);
+  const railMat = lambertMap(T.rail);
+  const postG = new CylinderGeometry(0.06, 0.08, 0.92, 7);
+  const capG = new ConeGeometry(0.085, 0.12, 7);
+  const posted = {}; // shared corner posts between pens draw once
+  const addPost = (x, z) => {
+    const key = x.toFixed(2) + "," + z.toFixed(2);
+    if (posted[key]) return;
+    posted[key] = true;
+    const p = new Mesh(postG, postMat);
+    p.position.set(x, 0.46, z);
+    p.castShadow = true;
+    penGroup.add(p);
+    const cap = new Mesh(capG, postMat);
+    cap.position.set(x, 0.97, z);
+    penGroup.add(cap);
+  };
+  // Axis-aligned fence run: posts every ~2.2 plus both ends, two rails.
+  const addRun = (x0, z0, x1, z1) => {
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len < 0.05) return;
+    const n = Math.max(1, Math.ceil(len / 2.2));
+    for (let i = 0; i <= n; i++)
+      addPost(x0 + ((x1 - x0) * i) / n, z0 + ((z1 - z0) * i) / n);
+    const rotY = Math.abs(x1 - x0) >= Math.abs(z1 - z0) ? 0 : Math.PI / 2;
+    for (const y of [0.7, 0.36]) {
+      const r = new Mesh(new BoxGeometry(len, 0.09, 0.05), railMat);
+      r.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
+      r.rotation.y = rotY;
+      r.castShadow = true;
+      r.receiveShadow = true;
+      penGroup.add(r);
+    }
+  };
+  const pens = layout.pens;
+  const block = pens[0].rect;
+  addRun(block.minX, block.minZ, block.minX, block.maxZ); // west side
+  addRun(block.minX, block.minZ, pens[pens.length - 1].rect.maxX, block.minZ); // shared north side
+  for (const pen of pens) {
+    const r = pen.rect;
+    addRun(r.maxX, r.minZ, r.maxX, r.maxZ); // east side (shared divider)
+    // South fence, split around the gate.
+    addRun(r.minX, r.maxZ, pen.gate.x - GATE_W / 2, r.maxZ);
+    addRun(pen.gate.x + GATE_W / 2, r.maxZ, r.maxX, r.maxZ);
+    // Gate leaf, hinged on the west gap post, swung open toward the
+    // commons so the opening reads at a glance.
+    const leaf = new Group();
+    for (const y of [0.62, 0.3]) {
+      const bar = new Mesh(new BoxGeometry(GATE_W - 0.12, 0.08, 0.04), railMat);
+      bar.position.set((GATE_W - 0.12) / 2, y, 0);
+      leaf.add(bar);
+    }
+    const diag = new Mesh(new BoxGeometry(GATE_W - 0.16, 0.07, 0.035), railMat);
+    diag.position.set((GATE_W - 0.12) / 2, 0.46, 0);
+    diag.rotation.z = 0.32;
+    leaf.add(diag);
+    const stile = new Mesh(new BoxGeometry(0.06, 0.62, 0.05), railMat);
+    stile.position.set(GATE_W - 0.15, 0.46, 0);
+    leaf.add(stile);
+    leaf.traverse((o) => (o.castShadow = true));
+    leaf.position.set(pen.gate.x - GATE_W / 2, 0, r.maxZ);
+    leaf.rotation.y = -1.2;
+    penGroup.add(leaf);
+    const sign = buildPenSign(pen.key);
+    sign.position.set(pen.gate.x + GATE_W / 2 + 0.4, 0, r.maxZ + 0.2);
+    penGroup.add(sign);
+  }
+  scene.add(penGroup);
+}
+
+/// Re-derive the pen layout from the roster. Only the project KEY SET
+/// triggers a re-fence (counts shape pen widths at that moment), so pens
+/// never jump around between polls.
+function syncPens(birds) {
+  const counts = {};
+  for (const b of birds) {
+    if (b.kind === "chick") continue;
+    const key = b.project_name || "";
+    if (key) counts[key] = (counts[key] || 0) + 1;
+  }
+  const keys = Object.keys(counts).sort();
+  const sig = keys.length >= 2 ? keys.join("\n") : "";
+  if (sig === (penState ? penState.sig : "")) return;
+  if (penGroup && scene) {
+    scene.remove(penGroup);
+    disposeObject(penGroup);
+  }
+  penGroup = null;
+  penState = null;
+  if (sig) {
+    const layout = penLayout(
+      keys.map((k) => ({ key: k, count: counts[k] })),
+      PEN_FIELD,
+    );
+    const byKey = {};
+    for (const pen of layout.pens) byKey[pen.key] = pen;
+    penState = { sig, layout, byKey };
+    if (scene) buildPenFences(layout);
+  }
+  // Wanderers re-pick inside their (possibly new) pen; birds bound
+  // elsewhere (nest, home, fence) finish their trip.
+  for (const id of Object.keys(flock)) {
+    const c = flock[id];
+    if (c.mode === "wander" || (c.mode === "walk" && c.afterWalk === "wander"))
+      c.routeTo(c.randomFieldPoint(), "wander");
+  }
+}
+
 // One straw nest (with eggs) per testing chicken, created on demand.
 let nestSeed = 4242;
 function buildNest() {
@@ -1826,6 +2003,7 @@ class Chicken {
     this.posV = DOOR_POS.clone();
     this.yaw = 0;
     this.target = null;
+    this.route = []; // queued waypoints (gate/corridor legs) after target
     this.afterWalk = "wander";
     this.pauseUntil = 0;
     this.peckT = 0;
@@ -1879,7 +2057,7 @@ class Chicken {
     if (parent) {
       this.mode = "follow"; // steering picks a slot target next frame
     } else {
-      this.walkTo(this.randomFieldPoint(rnd), "wander");
+      this.routeTo(this.randomFieldPoint(rnd), "wander");
     }
     if (info.phase === "testing") this.goNest();
     if (info.phase === "done" || info.phase === "wont_do") this.goHome();
@@ -1907,20 +2085,31 @@ class Chicken {
     if (b) {
       if (this.phase !== "working") return;
       const rnd = mulberry32(hashStr(this.cardId) ^ 0x5bf035);
-      this.fencePos = new Vector3(FENCE_X, 0, -3.4 + rnd() * 8.4);
+      const pen = birdPen(this);
+      this.fencePos = pen
+        ? new Vector3(
+            pen.rect.maxX - 0.45,
+            0,
+            pen.rect.minZ + 0.9 + rnd() * (pen.rect.maxZ - pen.rect.minZ - 1.8),
+          )
+        : new Vector3(FENCE_X, 0, -3.4 + rnd() * 8.4);
       if (scene && !this.stake) {
         this.stake = buildBlockedStake();
-        this.stake.position.set(FENCE_X - 0.15, 0, this.fencePos.z - 0.8);
+        this.stake.position.set(
+          this.fencePos.x - 0.15,
+          0,
+          this.fencePos.z - 0.8,
+        );
         this.stake.rotation.y = -0.5;
         scene.add(this.stake);
       }
       this.peckQueue.length = 0;
       this.peckPlan = null;
-      this.walkTo(this.fencePos, "sulk");
+      this.routeTo(this.fencePos, "sulk");
     } else {
       this.removeStake();
       if (this.mode === "sulk" || this.afterWalk === "sulk") {
-        this.walkTo(this.randomFieldPoint(), "wander");
+        this.routeTo(this.randomFieldPoint(), "wander");
       }
     }
   }
@@ -1938,18 +2127,35 @@ class Chicken {
     const r = rnd || Math;
     const rx = r.random ? r.random() : r();
     const rz = r.random ? r.random() : r();
+    const rect = wanderRect(this);
+    const inset = penState ? 0.55 : 0;
     return new Vector3(
-      FIELD.minX + rx * (FIELD.maxX - FIELD.minX),
+      rect.minX + inset + rx * (rect.maxX - rect.minX - 2 * inset),
       0,
-      FIELD.minZ + rz * (FIELD.maxZ - FIELD.minZ),
+      rect.minZ + inset + rz * (rect.maxZ - rect.minZ - 2 * inset),
     );
   }
 
   walkTo(v, afterMode) {
     if (this.mode === "roost") this.standUp(); // legs back for the walk
+    this.route.length = 0;
     this.target = v.clone();
     this.afterWalk = afterMode;
     if (this.mode !== "emerge") this.mode = "walk";
+  }
+
+  // Fence-aware walk: route through pen gates and along the commons
+  // corridor when pens are up; plain walkTo otherwise.
+  routeTo(v, afterMode) {
+    if (!penState) return this.walkTo(v, afterMode);
+    const pts = penRoute(
+      { x: this.posV.x, z: this.posV.z },
+      { x: v.x, z: v.z },
+      penState.layout,
+    );
+    this.walkTo(new Vector3(pts[0].x, 0, pts[0].z), afterMode);
+    for (let i = 1; i < pts.length; i++)
+      this.route.push(new Vector3(pts[i].x, 0, pts[i].z));
   }
 
   setPhase(phase) {
@@ -1967,7 +2173,7 @@ class Chicken {
         this.blocked = false; // replant: re-run the fence walk
         this.setBlocked(true);
       } else {
-        this.walkTo(this.randomFieldPoint(), "wander");
+        this.routeTo(this.randomFieldPoint(), "wander");
       }
     }
   }
@@ -1988,7 +2194,7 @@ class Chicken {
       scene.add(this.nest);
     }
     this.peckPlan = null;
-    this.walkTo(this.nestPos, "nest");
+    this.routeTo(this.nestPos, "nest");
   }
 
   leaveNest() {
@@ -2017,7 +2223,7 @@ class Chicken {
       this.walkTo(parent.posV.clone(), "absorb");
       return;
     }
-    this.walkTo(DOOR_POS, "homeArrive");
+    this.routeTo(DOOR_POS, "homeArrive");
   }
 
   // Roster no longer contains this card at all: same exit as done.
@@ -2075,11 +2281,19 @@ class Chicken {
           ringR = 1.15;
         }
         const a = baseYaw + ((this.chickSlot % 5) - 2) * 0.55;
-        const tx = anchor.x + Math.sin(a) * ringR;
-        const tz = anchor.z + Math.cos(a) * ringR;
+        let tx = anchor.x + Math.sin(a) * ringR;
+        let tz = anchor.z + Math.cos(a) * ringR;
+        // Chicks stay penned with their parent — but only while the
+        // parent is actually inside (a nesting parent waits outside).
+        const pen = birdPen(this);
+        if (pen && rectContains(pen.rect, { x: anchor.x, z: anchor.z })) {
+          tx = MathUtils.clamp(tx, pen.rect.minX + 0.3, pen.rect.maxX - 0.3);
+          tz = MathUtils.clamp(tz, pen.rect.minZ + 0.3, pen.rect.maxZ - 0.3);
+        }
         const dx = tx - this.posV.x;
         const dz = tz - this.posV.z;
         if (dx * dx + dz * dz > 0.12) {
+          this.route.length = 0; // steering overrides any queued route
           this.target = new Vector3(tx, 0, tz);
           this.afterWalk = "follow";
           this.mode = "walk";
@@ -2104,13 +2318,13 @@ class Chicken {
           DOOR_POS.z - 2.6 + r() * 3.4,
         );
       }
-      this.walkTo(this.roostPos, "roost");
+      this.routeTo(this.roostPos, "roost");
     } else if (
       !wantsRoost &&
       (this.mode === "roost" ||
         (this.mode === "walk" && this.afterWalk === "roost"))
     ) {
-      this.walkTo(this.randomFieldPoint(), "wander");
+      this.routeTo(this.randomFieldPoint(), "wander");
     }
     // Movement for walking modes.
     const moving =
@@ -2133,7 +2347,10 @@ class Chicken {
             : this.afterWalk === "follow" && dist > 2
               ? WALK_SPEED * 1.7
               : WALK_SPEED;
-      if (dist < 0.12) {
+      if (dist < 0.12 && this.route.length) {
+        // Waypoint reached: carry on along the fence-aware route.
+        this.target = this.route.shift();
+      } else if (dist < 0.12) {
         this.mode =
           this.afterWalk === "homeArrive" ? "homeArrive" : this.afterWalk;
         this.target = null;
@@ -2163,7 +2380,7 @@ class Chicken {
         this.mode === "wander" &&
         performance.now() / 1000 > this.pauseUntil
       ) {
-        this.walkTo(this.randomFieldPoint(), "wander");
+        this.routeTo(this.randomFieldPoint(), "wander");
       }
     }
 
@@ -2404,7 +2621,7 @@ function demoState(t) {
       id: "demo-worker",
       card_id: "demo-worker",
       kind: "hen",
-      project_name: "demo",
+      project_name: "coop-app",
       title: "Implement egg module",
       step: "in_progress",
       phase: "working",
@@ -2442,7 +2659,7 @@ function demoState(t) {
                 cardTitle: "Implement egg module",
                 cardDescription:
                   "Add an `EggStore` used by the layer service.\n\n- `lay(egg)` persists a new egg\n- `hatch(id)` marks it hatched\n\n```ts\ninterface EggStore {\n  lay(egg: Egg): Promise<void>;\n  hatch(id: string): Promise<Chick>;\n}\n```",
-                projectName: "demo",
+                projectName: "coop-app",
               },
             }
           : null,
@@ -2451,7 +2668,7 @@ function demoState(t) {
       id: "demo-tester",
       card_id: "demo-tester",
       kind: "hen",
-      project_name: "demo",
+      project_name: "egg-farm",
       title: "Review coop door",
       step: "review",
       phase: "testing",
@@ -2466,7 +2683,7 @@ function demoState(t) {
       id: "demo-blocked",
       card_id: "demo-blocked",
       kind: "hen",
-      project_name: "demo",
+      project_name: "coop-app",
       title: "Waiting on schema card",
       step: "in_progress",
       phase: "working",
@@ -2476,6 +2693,21 @@ function demoState(t) {
       blocked: true,
       busy: false,
       last_activity_ts: Date.now() - 600_000,
+    },
+    {
+      id: "demo-mill",
+      card_id: "demo-mill",
+      kind: "hen",
+      project_name: "feed-mill",
+      title: "Grind layer pellets",
+      step: "in_progress",
+      phase: "working",
+      activity: Math.floor(t / 4),
+      tool_class: "edit",
+      last_tool: "edit_file",
+      blocked: false,
+      busy: true,
+      last_activity_ts: Date.now() - 21_000,
     },
     {
       id: "demo-chat",
@@ -2585,7 +2817,7 @@ function demoState(t) {
       id: "demo-cycler",
       card_id: "demo-cycler",
       kind: "hen",
-      project_name: "demo",
+      project_name: "egg-farm",
       title: cycle < 14 ? "Wander the run" : "Head home",
       step: cycle < 14 ? "in_progress" : "done",
       phase: cycle < 14 ? "working" : "done",
@@ -2614,6 +2846,7 @@ const goneIds = {};
 
 function reconcile(state) {
   syncStats(state.stats);
+  syncPens(state.birds || state.chickens || []);
   const seen = {};
   for (const info of state.birds || state.chickens || []) {
     const id = info.id || info.card_id;

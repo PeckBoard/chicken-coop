@@ -43,6 +43,16 @@ exactly as long as `subagent_completed_at` is unset.
   - blocked cards: a blocked hen trudges to the fence and mopes there —
     hunched, head hung, wings slumped — beside a little painted stop stake;
     she rejoins the flock the moment the card unblocks.
+- **Project pens**: when the live birds span two or more projects, the field
+  splits into fenced pens — one per project, sorted by name, busier projects
+  getting a wider share — each with a swung-open gate and a little wooden
+  sign carrying the project name. Birds wander only inside their project's
+  pen (chicks stay in their parent's pen); session birds without a project
+  share the open commons strip along the camera edge, which doubles as the
+  corridor birds walk between their gate and the shared coop and nests. The
+  layout only re-computes when the project set changes, so pens never jump
+  around between polls; with a single project (or none) the field stays one
+  open run. Layout math lives in `page/pens.js` (vitest-covered).
 - **Eggs & daily stats**: cards reaching done leave eggs by the nests for the
   24h horizon — a loose dozen, then a pile (wont_do lays nothing) — and a
   painted wooden board beside the coop tallies eggs (cards done) and tool
@@ -88,8 +98,10 @@ npm test                # vitest for the state derivation
 ```
 
 The standalone demo (`npm run demo`, open `.demo/coop-demo.html`) shows every
-breed plus chicks, with hover name tags and the click info popover working on
-the demo roster. Query params for browser-driven verification:
+breed plus chicks across three demo projects (`coop-app`, `egg-farm`,
+`feed-mill` — so the fenced project pens render standalone), with hover name
+tags and the click info popover working on the demo roster. Query params for
+browser-driven verification:
 `?focus=<bird id>` frames one bird close up (family stays visible, strangers
 hide), `&yaw=<radians>` poses it at a fixed heading in the open field,
 `?hour=<0..24, fractional>` forces the day/night cycle to any local hour
