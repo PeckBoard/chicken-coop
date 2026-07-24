@@ -1,6 +1,6 @@
 {
   "name": "peckboard-chicken-coop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "PeckBoard plugin: a 3D chicken run visualizing every live session as a bird — hens for cards, a rooster for chats, a barred hen for repeating tasks, a bantam for temp sessions, chicks for subagents.",
   "scripts": {
