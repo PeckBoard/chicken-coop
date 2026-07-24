@@ -17,7 +17,7 @@ export function manifestJson(): string {
       "sessions, and chicks that follow their parent bird for subagents — pecking " +
       "on tool activity, nesting during testing, raising an alert badge when a " +
       "worker asks a question.",
-    version: "0.3.1",
+    version: "0.4.0",
     repository: "https://github.com/PeckBoard/chicken-coop",
     hooks: ["http.request.before", "http.request.authed"],
     sidebar_items: [
