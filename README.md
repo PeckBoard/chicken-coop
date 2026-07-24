@@ -150,11 +150,11 @@ phases, activity counter, and despawn via the page's DOM mirror
   "author": "PeckBoard",
   "homepage": "https://github.com/PeckBoard/chicken-coop",
   "version": "0.3.1",
-  "tags": ["visualization", "fun", "workers"],
+  "version": "0.4.0",
   "category": "visualization",
   "hooks": ["http.request.before", "http.request.authed"],
-  "url": "https://github.com/PeckBoard/chicken-coop/releases/download/v0.3.1/chicken-coop.wasm",
-  "sha256": "bd99ad90f29f1db0c61321454b695a56518e8ed0c5130a1f395b59020806488f",
+  "url": "https://github.com/PeckBoard/chicken-coop/releases/download/v0.4.0/chicken-coop.wasm",
+  "sha256": "19e39313e308eeda92b1b440fa86975de52c344eb43c1bc9255c3f81c35e5185",
   "min_peckboard": "0.0.132"
 }
 ```
