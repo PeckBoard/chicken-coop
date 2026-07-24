@@ -30,6 +30,7 @@ import {
   PCFSoftShadowMap,
   PerspectiveCamera,
   PlaneGeometry,
+  PointLight,
   Raycaster,
   RepeatWrapping,
   Scene,
@@ -167,11 +168,214 @@ try {
   /* URLSearchParams unavailable: skip the probe */
 }
 
+// ── Procedural sound (WebAudio, synthesized — no assets) ─────────────
+//
+// Oscillators and filtered noise only: soft clucks per peck (timbre by
+// tool class), a rooster crow when a question badge first appears, and a
+// faint daytime breeze with the odd distant songbird. Default muted; the
+// corner toggle persists in localStorage, and the AudioContext is only
+// created/resumed on a user gesture (autoplay policy). Volumes stay
+// gentle — this page lives in a sidebar.
+
+const sound = (() => {
+  const KEY = "coop-sound"; // "on" | "off" (absent = muted)
+  let muted = true;
+  try {
+    muted = localStorage.getItem(KEY) !== "on";
+  } catch (e) {
+    /* storage unavailable: stay muted */
+  }
+  let ctx = null;
+  let master = null;
+  let ambGain = null;
+  let day = 1;
+  let lastCluckAt = 0;
+
+  function ensure() {
+    if (ctx) return true;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    try {
+      ctx = new AC();
+    } catch (e) {
+      return false;
+    }
+    master = ctx.createGain();
+    master.gain.value = 0.5;
+    master.connect(ctx.destination);
+    // Breeze bed: a 2s loop of low-passed brownish noise, scaled by the
+    // daylight factor (near-silent at night).
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let v = 0;
+    for (let i = 0; i < len; i++) {
+      v = v * 0.985 + (Math.random() * 2 - 1) * 0.015;
+      data[i] = v * 7;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 340;
+    ambGain = ctx.createGain();
+    ambGain.gain.value = 0;
+    src.connect(lp);
+    lp.connect(ambGain);
+    ambGain.connect(master);
+    src.start();
+    // Occasional distant songbird, daytime only.
+    setInterval(() => {
+      if (muted || ctx.state !== "running" || day < 0.5) return;
+      if (Math.random() < 0.45) chirp();
+    }, 6000);
+    return true;
+  }
+
+  // One syllable: a pitch-dropping oscillator with a fast attack/decay.
+  function blip(t0, f0, f1, dur, peak, type) {
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t0);
+    o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g);
+    g.connect(master);
+    o.start(t0);
+    o.stop(t0 + dur + 0.02);
+  }
+
+  function chirp() {
+    const t0 = ctx.currentTime + 0.05;
+    const n = 2 + Math.floor(Math.random() * 3);
+    const base = 2400 + Math.random() * 1200;
+    for (let i = 0; i < n; i++) {
+      blip(t0 + i * 0.14, base * 1.15, base, 0.09, 0.016, "sine");
+    }
+  }
+
+  // Peck cluck, timbre by tool class: command = sharp double, edit = mid,
+  // read = soft coo. Rate-limited so a busy flock isn't a hailstorm.
+  function cluck(cls) {
+    if (muted || !ctx || ctx.state !== "running") return;
+    if (ctx.currentTime - lastCluckAt < 0.18) return;
+    lastCluckAt = ctx.currentTime;
+    const t = ctx.currentTime + 0.01;
+    if (cls === "command") {
+      blip(t, 1050, 430, 0.07, 0.12, "square");
+      blip(t + 0.09, 960, 400, 0.06, 0.09, "square");
+    } else if (cls === "edit") {
+      blip(t, 760, 360, 0.09, 0.1, "triangle");
+    } else if (cls === "read") {
+      blip(t, 520, 300, 0.13, 0.055, "sine");
+    } else {
+      blip(t, 640, 330, 0.1, 0.07, "triangle");
+    }
+  }
+
+  // Rooster crow: one sawtooth through a bandpass, four gain-pulsed
+  // syllables with the last held and falling.
+  function crow() {
+    if (muted || !ctx || ctx.state !== "running") return;
+    const t = ctx.currentTime + 0.02;
+    const o = ctx.createOscillator();
+    o.type = "sawtooth";
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 1300;
+    bp.Q.value = 2.2;
+    const g = ctx.createGain();
+    g.gain.value = 0.0001;
+    o.connect(bp);
+    bp.connect(g);
+    g.connect(master);
+    const syllables = [
+      [t, 620, 0.15],
+      [t + 0.2, 840, 0.15],
+      [t + 0.4, 700, 0.15],
+      [t + 0.62, 920, 0.5],
+    ];
+    for (const [st, f, d] of syllables) {
+      o.frequency.setValueAtTime(f * 0.85, st);
+      o.frequency.exponentialRampToValueAtTime(f, st + 0.05);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.exponentialRampToValueAtTime(0.075, st + 0.035);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + d);
+    }
+    o.frequency.exponentialRampToValueAtTime(480, t + 1.12);
+    o.start(t);
+    o.stop(t + 1.2);
+  }
+
+  // Daylight 0..1 from the day/night cycle: scales the breeze bed and
+  // gates the chirps.
+  function setDay(d) {
+    if (Math.abs(d - day) < 0.01) return;
+    day = d;
+    if (ambGain && !muted && ctx)
+      ambGain.gain.setTargetAtTime(0.02 * day, ctx.currentTime, 0.5);
+  }
+
+  // Create/resume the context — must be called from a user gesture.
+  function unlock() {
+    if (muted || !ensure()) return;
+    if (ctx.state !== "running") ctx.resume();
+    ambGain.gain.setTargetAtTime(0.02 * day, ctx.currentTime, 0.5);
+  }
+
+  function toggle() {
+    muted = !muted;
+    try {
+      localStorage.setItem(KEY, muted ? "off" : "on");
+    } catch (e) {
+      /* not persisted */
+    }
+    if (!muted) unlock();
+    else if (ctx) ctx.suspend();
+    return muted;
+  }
+
+  return { cluck, crow, setDay, toggle, unlock, isMuted: () => muted };
+})();
+
+// Corner mute toggle (default muted; choice persists). Created here, like
+// the error box, so it exists in both the served page and the demo.
+(() => {
+  const b = document.createElement("button");
+  b.id = "coop-sound";
+  b.setAttribute("data-testid", "coop-sound");
+  b.title = "Toggle sound";
+  b.style.cssText =
+    "position:fixed;right:12px;bottom:12px;z-index:20;width:34px;height:34px;" +
+    "border:none;border-radius:8px;background:rgba(255,255,255,0.82);" +
+    "font:16px system-ui,sans-serif;color:#333;cursor:pointer;";
+  const paint = () => {
+    b.textContent = sound.isMuted() ? "🔇" : "🔊";
+    b.setAttribute("data-muted", sound.isMuted() ? "1" : "0");
+  };
+  b.addEventListener("click", () => {
+    sound.toggle();
+    paint();
+  });
+  document.body.appendChild(b);
+  paint();
+})();
+// If sound was left on last visit, the context still needs a fresh gesture.
+window.addEventListener("pointerdown", () => sound.unlock());
 // ── Scene setup (guarded: headless fallback keeps state + mirror alive) ──
 
 let renderer = null;
 let scene = null;
 let camera = null;
+let sunLight = null;
+let hemiLight = null;
+let ambLight = null;
+let moonLight = null;
+let coopGlow = null; // {light, glassMat, doorMat} once buildCoop runs
 
 function initScene() {
   try {
@@ -192,17 +396,23 @@ function initScene() {
   camera.position.set(0, 9.4, 14.2);
   camera.lookAt(-0.3, 0.2, -1.6);
 
-  scene.add(new HemisphereLight(0xd8ecff, 0x6b8f4e, 0.85));
-  scene.add(new AmbientLight(0xffffff, 0.25));
-  const sun = new DirectionalLight(0xfff2d8, 1.6);
-  sun.position.set(-9, 14, 8);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -20;
-  sun.shadow.camera.right = 20;
-  sun.shadow.camera.top = 20;
-  sun.shadow.camera.bottom = -20;
-  scene.add(sun);
+  hemiLight = new HemisphereLight(0xd8ecff, 0x6b8f4e, 0.85);
+  scene.add(hemiLight);
+  ambLight = new AmbientLight(0xffffff, 0.25);
+  scene.add(ambLight);
+  sunLight = new DirectionalLight(0xfff2d8, 1.6);
+  sunLight.position.set(-9, 14, 8);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.camera.left = -20;
+  sunLight.shadow.camera.right = 20;
+  sunLight.shadow.camera.top = 20;
+  sunLight.shadow.camera.bottom = -20;
+  scene.add(sunLight);
+  // Cool fill that stands in for the moon once the sun is down.
+  moonLight = new DirectionalLight(0x8fa8d8, 0);
+  moonLight.position.set(7, 11, -6);
+  scene.add(moonLight);
 
   buildWorld();
   onResize();
@@ -219,6 +429,107 @@ function onResize() {
   camera.updateProjectionMatrix();
 }
 
+// ── Day/night cycle (real local clock; ?hour= override) ──────────────
+//
+// The sun rides an east-west arc pinned to the local clock (up 6h–18h);
+// sky, fog, hemisphere, and ambient colors blend between day, dusk-warm,
+// and dim-blue night palettes as it crosses the horizon. After dark the
+// coop's window and doorway glow warm and idle birds roost beside it.
+
+// ?hour=<0..24, fractional> forces the time of day for demos/tests, e.g.
+// ?hour=21.5 for night shots. Absent: the real local clock.
+const HOUR_OVERRIDE = (() => {
+  try {
+    const v = new URLSearchParams(location.search).get("hour");
+    const h = v === null ? NaN : parseFloat(v);
+    return Number.isNaN(h) ? null : ((h % 24) + 24) % 24;
+  } catch (e) {
+    return null;
+  }
+})();
+
+function localHour() {
+  if (HOUR_OVERRIDE !== null) return HOUR_OVERRIDE;
+  const d = new Date();
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+}
+
+// Sun elevation proxy (-1..1, up 6h–18h) and the daylight factor
+// (0 night → 1 day) with a soft dawn/dusk ramp around the horizon.
+function sunElev(hour) {
+  return Math.sin(((hour - 6) / 12) * Math.PI);
+}
+
+function dayFactor01(hour) {
+  const t = Math.min(1, Math.max(0, (sunElev(hour) + 0.08) / 0.4));
+  return t * t * (3 - 2 * t); // smoothstep
+}
+
+const SKY_DAY = new Color(0x87b5d8);
+const SKY_NIGHT = new Color(0x0e1728);
+const SKY_DUSK = new Color(0xd08a55);
+const HEMI_DAY = new Color(0xd8ecff);
+const HEMI_NIGHT = new Color(0x2c3a55);
+const HEMI_GROUND_DAY = new Color(0x6b8f4e);
+const HEMI_GROUND_NIGHT = new Color(0x1b241d);
+const AMB_DAY = new Color(0xffffff);
+const AMB_NIGHT = new Color(0x33415e);
+const SUN_DAY = new Color(0xfff2d8);
+const SUN_DUSK = new Color(0xff9a4d);
+const GLOW_WARM = new Color(0xffb066);
+const _sky = new Color();
+const _tmp = new Color();
+
+let isNight = false; // roosting gate, read by Chicken.update
+let prevNightAttr = null;
+
+function updateDayNight() {
+  const hour = localHour();
+  const day = dayFactor01(hour);
+  const elev = sunElev(hour);
+  // Dusk warmth peaks while the sun sits on the horizon.
+  const dusk = Math.max(0, 1 - Math.abs(elev) / 0.25);
+  isNight = day < 0.3;
+  window.__coopDay = day;
+  if (prevNightAttr !== isNight) {
+    prevNightAttr = isNight;
+    document.body.setAttribute("data-coop-night", isNight ? "1" : "0");
+  }
+  sound.setDay(day);
+  if (!renderer) return;
+
+  _sky.copy(SKY_NIGHT).lerp(SKY_DAY, day);
+  _sky.lerp(SKY_DUSK, dusk * 0.55);
+  scene.background.copy(_sky);
+  scene.fog.color.copy(_sky);
+
+  hemiLight.color.copy(_tmp.copy(HEMI_NIGHT).lerp(HEMI_DAY, day));
+  hemiLight.groundColor.copy(
+    _tmp.copy(HEMI_GROUND_NIGHT).lerp(HEMI_GROUND_DAY, day),
+  );
+  hemiLight.intensity = 0.28 + 0.57 * day;
+  ambLight.color.copy(_tmp.copy(AMB_NIGHT).lerp(AMB_DAY, day));
+  ambLight.intensity = 0.15 + 0.1 * day;
+
+  // Sun arc across the sky; parked low (and off) through the night.
+  const th = ((hour - 6) / 12) * Math.PI;
+  sunLight.position.set(
+    -Math.cos(th) * 14,
+    Math.max(elev, 0.06) * 13 + 1.5,
+    8 - dusk * 3,
+  );
+  sunLight.intensity = 1.6 * day + 0.25 * dusk;
+  sunLight.color.copy(_tmp.copy(SUN_DAY).lerp(SUN_DUSK, dusk));
+  moonLight.intensity = 0.32 * (1 - day);
+
+  // Warm light from the coop window/door after dark.
+  const glow = 1 - day;
+  if (coopGlow) {
+    coopGlow.light.intensity = glow * 1.35;
+    coopGlow.glassMat.emissive.copy(GLOW_WARM).multiplyScalar(glow * 0.95);
+    coopGlow.doorMat.emissive.copy(GLOW_WARM).multiplyScalar(glow * 0.8);
+  }
+}
 function lambert(color) {
   return new MeshLambertMaterial({ color });
 }
@@ -696,7 +1007,8 @@ function buildCoop(T) {
   coop.add(vent);
 
   // Doorway (kept at the same spot so DOOR_POS still lines up).
-  const opening = box(0.06, 1.15, 0.9, 0x241610);
+  const doorMat = new MeshLambertMaterial({ color: 0x241610 });
+  const opening = boxMap(0.06, 1.15, 0.9, doorMat);
   opening.position.set(1.71, 1.34, 1.0);
   coop.add(opening);
   for (const side of [-1, 1]) {
@@ -728,7 +1040,8 @@ function buildCoop(T) {
   const winFrame = boxMap(0.08, 0.86, 0.86, trimMat);
   winFrame.position.set(1.72, 1.78, -0.55);
   coop.add(winFrame);
-  const glass = new Mesh(new BoxGeometry(0.04, 0.7, 0.7), lambert(0xaed2e8));
+  const glassMat = new MeshLambertMaterial({ color: 0xaed2e8 });
+  const glass = new Mesh(new BoxGeometry(0.04, 0.7, 0.7), glassMat);
   glass.position.set(1.745, 1.78, -0.55);
   coop.add(glass);
   const munH = boxMap(0.03, 0.05, 0.7, trimMat);
@@ -804,6 +1117,12 @@ function buildCoop(T) {
     coop.add(hay);
   }
 
+  // Night glow: a warm lamp inside the coop; updateDayNight drives its
+  // intensity and the window/door emissives from the daylight factor.
+  const glowLight = new PointLight(0xffb066, 0, 11, 2);
+  glowLight.position.set(2.3, 1.7, 0.2);
+  coop.add(glowLight);
+  coopGlow = { light: glowLight, glassMat, doorMat };
   coop.position.copy(COOP_POS);
   scene.add(coop);
 }
@@ -1493,6 +1812,7 @@ class Chicken {
     this.blocked = false;
     this.stake = null;
     this.fencePos = null;
+    this.roostPos = null;
     this.lastActivityTs = info.last_activity_ts || null;
     this.labelOp = 0;
     this.pecksPlayed = 0;
@@ -1571,6 +1891,8 @@ class Chicken {
   // roster still reports it (the resolution lands async host-side).
   setQuestion(q) {
     if (q && this.answeredQid === q.id) q = null;
+    // A badge newly appearing (not just re-reported) gets the rooster crow.
+    if (q && !(this.question && this.question.id === q.id)) sound.crow();
     this.question = q || null;
     if (this.alert) this.alert.visible = !!this.question;
   }
@@ -1624,6 +1946,7 @@ class Chicken {
   }
 
   walkTo(v, afterMode) {
+    if (this.mode === "roost") this.standUp(); // legs back for the walk
     this.target = v.clone();
     this.afterWalk = afterMode;
     if (this.mode !== "emerge") this.mode = "walk";
@@ -1726,6 +2049,7 @@ class Chicken {
           : cls === "read"
             ? { dips: 1, speed: 3.2, dust: false, tilt: 0.5 }
             : { dips: 1, speed: 4.5, dust: false, tilt: 0 };
+    sound.cluck(cls);
     this.pecksPlayed++;
   }
 
@@ -1763,6 +2087,31 @@ class Chicken {
       }
     }
 
+    // Night: idle birds retire to a spot beside the coop and doze there.
+    // Anything with live work — pecks queued, a pending question, a card
+    // in flight — stays out and keeps at it.
+    const wantsRoost = isNight && this.roostEligible();
+    if (
+      wantsRoost &&
+      (this.mode === "wander" ||
+        (this.mode === "walk" && this.afterWalk === "wander"))
+    ) {
+      if (!this.roostPos) {
+        const r = mulberry32(hashStr(this.cardId) ^ 0x520a11);
+        this.roostPos = new Vector3(
+          DOOR_POS.x - 0.6 + r() * 1.9,
+          0,
+          DOOR_POS.z - 2.6 + r() * 3.4,
+        );
+      }
+      this.walkTo(this.roostPos, "roost");
+    } else if (
+      !wantsRoost &&
+      (this.mode === "roost" ||
+        (this.mode === "walk" && this.afterWalk === "roost"))
+    ) {
+      this.walkTo(this.randomFieldPoint(), "wander");
+    }
     // Movement for walking modes.
     const moving =
       (this.mode === "walk" || this.mode === "emerge") && this.target;
@@ -1790,6 +2139,7 @@ class Chicken {
         this.target = null;
         this.pauseUntil = performance.now() / 1000 + 1 + Math.random() * 2.2;
         if (this.mode === "nest") this.sitDown();
+        if (this.mode === "roost") this.sitDown(-0.1);
         if (this.mode === "homeArrive" || this.mode === "absorb")
           this.fadeT = 0;
       } else {
@@ -1858,6 +2208,14 @@ class Chicken {
       viz.wingL.rotation.z = -Math.abs(flap);
       viz.wingR.rotation.z = Math.abs(flap);
       viz.bodyG.rotation.z = Math.sin(performance.now() / 900) * 0.03;
+    }
+
+    // Roosting: tucked down by the coop, head low, the slightest sway.
+    if (this.mode === "roost" && viz) {
+      viz.neckG.rotation.x = 0.42 + Math.sin(performance.now() / 1300) * 0.04;
+      viz.bodyG.rotation.z = Math.sin(performance.now() / 1100) * 0.02;
+      viz.wingL.rotation.z = -0.12;
+      viz.wingR.rotation.z = 0.12;
     }
 
     // Blocked: stand at the fence facing out (+x), hunched, head hung,
@@ -1955,12 +2313,34 @@ class Chicken {
     }
   }
 
-  sitDown() {
+  sitDown(depth = -0.18) {
     if (!this.viz) return;
     this.viz.legL.visible = false;
     this.viz.legR.visible = false;
-    this.posV.y = -0.18; // sunk into the nest; the frame loop applies posV
+    this.posV.y = depth; // sunk into the nest/ground; frame loop applies posV
     this.viz.neckG.rotation.x = 0;
+  }
+
+  standUp() {
+    this.posV.y = 0;
+    if (!this.viz) return;
+    this.viz.legL.visible = true;
+    this.viz.legR.visible = true;
+    this.viz.neckG.rotation.x = 0;
+  }
+
+  // No live work keeping this bird outside after dark. Chicks are excluded:
+  // they just follow their parent.
+  roostEligible() {
+    return (
+      !this.busy &&
+      !this.question &&
+      !this.blocked &&
+      this.kind !== "chick" &&
+      (this.phase === "working" || this.phase === "idle") &&
+      this.peckQueue.length === 0 &&
+      !this.peckPlan
+    );
   }
 
   dispose() {
@@ -2016,6 +2396,9 @@ window.addEventListener("message", (e) => {
 const DEMO = window.parent === window;
 
 function demoState(t) {
+  // After dark the two quiet session birds go idle so the demo showcases
+  // roosting; the workers keep pecking (active work stays out).
+  const demoNight = dayFactor01(localHour()) < 0.3;
   const birds = [
     {
       id: "demo-worker",
@@ -2124,12 +2507,12 @@ function demoState(t) {
       kind: "barred",
       project_name: "",
       title: "Nightly digest",
-      phase: "working",
-      activity: Math.floor(t / 5),
+      phase: demoNight ? "idle" : "working",
+      activity: demoNight ? 0 : Math.floor(t / 5),
       tool_class: "read",
       last_tool: "read_file",
       blocked: false,
-      busy: true,
+      busy: !demoNight,
       last_activity_ts: Date.now() - 1_800_000,
     },
     {
@@ -2137,12 +2520,12 @@ function demoState(t) {
       kind: "bantam",
       project_name: "",
       title: "research: egg prices",
-      phase: "working",
-      activity: Math.floor(t / 6),
+      phase: demoNight ? "idle" : "working",
+      activity: demoNight ? 0 : Math.floor(t / 6),
       tool_class: "read",
       last_tool: "fetch_url",
       blocked: false,
-      busy: true,
+      busy: !demoNight,
       last_activity_ts: Date.now() - 125_000,
     },
     // Chicks last: their parents must already be in the flock.
@@ -3105,6 +3488,7 @@ function animate() {
   }
   if (dirty) syncMirror();
   updatePuffs(dt);
+  updateDayNight();
   if (FOCUS_ID && renderer) {
     // Model-inspection mode: only the focused bird and its family (parent /
     // chicks) stay visible and labels hide, so nothing photobombs the shot.

@@ -54,6 +54,17 @@ exactly as long as `subagent_completed_at` is unset.
   last-activity age (from the state payload's `last_activity_ts`). A bird
   with a pending question badge opens the Q&A modal instead; Escape or
   click-outside closes either.
+- **Day/night cycle**: sky, sun, and ambient light track the real local
+  clock — dawn, day, dusk, and a dim blue night with a warm glow from the
+  coop window and doorway. Idle birds (no live work) roost beside the coop
+  after dark; birds with active work stay out and keep pecking. Force any
+  time of day with `?hour=` (see Development below).
+- **Sound** (synthesized WebAudio, no audio files): soft clucks on pecks —
+  sharp for commands, mid for edits, soft for reads — a rooster crow when a
+  question badge first appears, and a faint daytime breeze with distant
+  songbirds. Default muted; the speaker toggle in the bottom-right corner
+  persists in localStorage, and audio only starts after a user gesture
+  (browser autoplay policy).
 - **Answer** (`POST /api/plugin-ui/chicken-coop/answer`, authed): body
   `{session_id, question_id, answers, rejected}`. Validated in the wasm, then
   resolved via `peckboard_answer_question`, which runs core's own
@@ -77,16 +88,18 @@ npm test                # vitest for the state derivation
 ```
 
 The standalone demo (`npm run demo`, open `.demo/coop-demo.html`) shows every
-breed plus chicks. Query params for browser-driven verification:
-`?focus=<bird id>` frames one bird close up (family stays visible, strangers
-hide), `&yaw=<radians>` poses it at a fixed heading in the open field, and
-`?err=1` throws a probe error — uncaught errors render into a visible
-`#coop-errors` box (`data-count` attribute) since the harness can't read the
-console.
-The standalone demo (`npm run demo`, open `.demo/coop-demo.html`) shows every
 breed plus chicks, with hover name tags and the click info popover working on
 the demo roster. Query params for browser-driven verification:
-and embedded as a JSON-escaped string in `src/generated/pageBundle.ts`, then
+`?focus=<bird id>` frames one bird close up (family stays visible, strangers
+hide), `&yaw=<radians>` poses it at a fixed heading in the open field,
+`?hour=<0..24, fractional>` forces the day/night cycle to any local hour
+(`?hour=21.5` → night: roosting idle birds and the glowing coop window;
+`?hour=12` → noon), and `?err=1` throws a probe error — uncaught errors
+render into a visible `#coop-errors` box (`data-count` attribute) since the
+harness can't read the console.
+
+`npm run bundle` compiles the page (page/main.js + three.js) to a minified
+IIFE embedded as a JSON-escaped string in `src/generated/pageBundle.ts`, then
 the plugin itself is bundled CJS/es2020 and compiled by `extism-js` to
 `dist/plugin.wasm`.
 
