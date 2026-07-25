@@ -16,5 +16,8 @@ declare module "extism:host" {
     peckboard_list_projects(ptr: I64): I64;
     peckboard_list_cards(ptr: I64): I64;
     peckboard_session_events(ptr: I64): I64;
+    peckboard_list_sessions_brief(ptr: I64): I64;
+    peckboard_session_questions(ptr: I64): I64;
+    peckboard_answer_question(ptr: I64): I64;
   }
 }
