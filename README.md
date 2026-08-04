@@ -149,12 +149,12 @@ phases, activity counter, and despawn via the page's DOM mirror
   "description": "3D chicken run visualizing every live session as a bird — hens, roosters, barred hens, bantams, and chicks that follow their parents.",
   "author": "PeckBoard",
   "homepage": "https://github.com/PeckBoard/chicken-coop",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "tags": ["visualization", "fun", "workers"],
   "category": "visualization",
   "hooks": ["http.request.before", "http.request.authed"],
-  "url": "https://github.com/PeckBoard/chicken-coop/releases/download/v0.4.1/chicken-coop.wasm",
-  "sha256": "6940c42ed756afb21609705a31dae6b182cd8a8a68586ede90001c63eb6162bf",
+  "url": "https://github.com/PeckBoard/chicken-coop/releases/download/v0.4.2/chicken-coop.wasm",
+  "sha256": "5d3f0fd042cd3b95b59b0fb88fc967653a1dbf1647384416bccb2493784a583e",
   "min_peckboard": "0.0.132"
 }
 ```
