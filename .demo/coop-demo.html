@@ -4,15 +4,119 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Chicken Coop (demo)</title>
+<script>
+// Host theme stamp, before first paint (mirrors src/page.ts): explicit
+// ?theme= wins over the OS preference; absent, prefers-color-scheme decides.
+const t = new URLSearchParams(location.search).get("theme");
+if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+</script>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #87b5d8; }
+:root {
+  --coop-sky: #87b5d8;
+  --coop-hud-bg: rgba(255,255,255,0.82);
+  --coop-hud-fg: #333;
+  --coop-empty-fg: rgba(28,46,32,0.9);
+  --coop-scrim: rgba(24,30,20,0.45);
+  --coop-panel: #fdfbf7;
+  --coop-panel-fg: #2f2a26;
+  --coop-line: #eee7da;
+  --coop-hover: #f0ebe0;
+  --coop-fg-dim: #7a7168;
+  --coop-fg-mut: #8a8378;
+  --coop-fg-soft: #5c554c;
+  --coop-inset: #f6f1e7;
+  --coop-inset-line: #eadfc9;
+  --coop-dash-line: #e0d5bd;
+  --coop-chip-bg: #efe7d6;
+  --coop-chip-fg: #6f6350;
+  --coop-code-bg: #efe9dc;
+  --coop-field-bg: #fff;
+  --coop-field-line: #e6ddca;
+  --coop-field-hover: #faf5ea;
+  --coop-checked-bg: #fdf4e0;
+  --coop-ghost-line: #ddd3c0;
+  --coop-err: #b3402a;
+  --coop-accent-text: #a07408;
+  --coop-pipe-box: #efebe1;
+  --coop-pipe-box-line: #ddd5c4;
+  --coop-pipe-lbl: #6f6a60;
+  --coop-pipe-arrow: #c8c3b8;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --coop-sky: #0e1728;
+  --coop-hud-bg: rgba(16,22,36,0.85);
+  --coop-hud-fg: #e8ecf5;
+  --coop-empty-fg: rgba(214,226,240,0.9);
+  --coop-scrim: rgba(4,8,16,0.6);
+  --coop-panel: #262119;
+  --coop-panel-fg: #ece5d8;
+  --coop-line: #3b3327;
+  --coop-hover: #3a3226;
+  --coop-fg-dim: #b0a695;
+  --coop-fg-mut: #a1988a;
+  --coop-fg-soft: #c4bbab;
+  --coop-inset: #2f2921;
+  --coop-inset-line: #453b2b;
+  --coop-dash-line: #4a4030;
+  --coop-chip-bg: #3a3226;
+  --coop-chip-fg: #cfc3a9;
+  --coop-code-bg: #352e22;
+  --coop-field-bg: #1d1913;
+  --coop-field-line: #4c4130;
+  --coop-field-hover: #322b20;
+  --coop-checked-bg: #3f351d;
+  --coop-ghost-line: #554936;
+  --coop-err: #ff9b85;
+  --coop-accent-text: #e0a52c;
+  --coop-pipe-box: #3a332a;
+  --coop-pipe-box-line: #544b3d;
+  --coop-pipe-lbl: #b5ad9e;
+  --coop-pipe-arrow: #6a6152;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --coop-sky: #0e1728;
+    --coop-hud-bg: rgba(16,22,36,0.85);
+    --coop-hud-fg: #e8ecf5;
+    --coop-empty-fg: rgba(214,226,240,0.9);
+    --coop-scrim: rgba(4,8,16,0.6);
+    --coop-panel: #262119;
+    --coop-panel-fg: #ece5d8;
+    --coop-line: #3b3327;
+    --coop-hover: #3a3226;
+    --coop-fg-dim: #b0a695;
+    --coop-fg-mut: #a1988a;
+    --coop-fg-soft: #c4bbab;
+    --coop-inset: #2f2921;
+    --coop-inset-line: #453b2b;
+    --coop-dash-line: #4a4030;
+    --coop-chip-bg: #3a3226;
+    --coop-chip-fg: #cfc3a9;
+    --coop-code-bg: #352e22;
+    --coop-field-bg: #1d1913;
+    --coop-field-line: #4c4130;
+    --coop-field-hover: #322b20;
+    --coop-checked-bg: #3f351d;
+    --coop-ghost-line: #554936;
+    --coop-err: #ff9b85;
+    --coop-accent-text: #e0a52c;
+    --coop-pipe-box: #3a332a;
+    --coop-pipe-box-line: #544b3d;
+    --coop-pipe-lbl: #b5ad9e;
+    --coop-pipe-arrow: #6a6152;
+    color-scheme: dark;
+  }
+}
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--coop-sky); }
   #stage { position: fixed; inset: 0; }
   #hud { position: fixed; top: 10px; left: 12px; padding: 6px 10px;
-    background: rgba(255,255,255,0.82); border-radius: 8px;
-    font: 13px/1.4 system-ui, sans-serif; color: #333; pointer-events: none; }
+    background: var(--coop-hud-bg); border-radius: 8px;
+    font: 13px/1.4 system-ui, sans-serif; color: var(--coop-hud-fg); pointer-events: none; }
   #empty { position: fixed; inset: 0; display: none; align-items: center;
     justify-content: center; pointer-events: none;
-    font: 15px system-ui, sans-serif; color: rgba(40,60,40,0.75); }
+    font: 15px system-ui, sans-serif; color: var(--coop-empty-fg); }
   #coop-mirror { display: none; }
 </style>
 </head>

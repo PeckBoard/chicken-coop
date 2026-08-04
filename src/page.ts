@@ -5,6 +5,76 @@
 
 import { PAGE_JS } from "./generated/pageBundle";
 
+// DOM chrome palette — HUD, corner buttons, Q&A modal, info popover.
+// Everything except the canvas, whose day/night colors live in page/main.js.
+// DARK_VARS is spliced into both the [data-theme="dark"] block (explicit
+// ?theme=dark stamp) and the prefers-color-scheme media query (auto mode),
+// so the two can never drift apart.
+
+const LIGHT_VARS =
+  "  --coop-sky: #87b5d8;\n" +
+  "  --coop-hud-bg: rgba(255,255,255,0.82);\n" +
+  "  --coop-hud-fg: #333;\n" +
+  "  --coop-empty-fg: rgba(28,46,32,0.9);\n" +
+  "  --coop-scrim: rgba(24,30,20,0.45);\n" +
+  "  --coop-panel: #fdfbf7;\n" +
+  "  --coop-panel-fg: #2f2a26;\n" +
+  "  --coop-line: #eee7da;\n" +
+  "  --coop-hover: #f0ebe0;\n" +
+  "  --coop-fg-dim: #7a7168;\n" +
+  "  --coop-fg-mut: #8a8378;\n" +
+  "  --coop-fg-soft: #5c554c;\n" +
+  "  --coop-inset: #f6f1e7;\n" +
+  "  --coop-inset-line: #eadfc9;\n" +
+  "  --coop-dash-line: #e0d5bd;\n" +
+  "  --coop-chip-bg: #efe7d6;\n" +
+  "  --coop-chip-fg: #6f6350;\n" +
+  "  --coop-code-bg: #efe9dc;\n" +
+  "  --coop-field-bg: #fff;\n" +
+  "  --coop-field-line: #e6ddca;\n" +
+  "  --coop-field-hover: #faf5ea;\n" +
+  "  --coop-checked-bg: #fdf4e0;\n" +
+  "  --coop-ghost-line: #ddd3c0;\n" +
+  "  --coop-err: #b3402a;\n" +
+  "  --coop-accent-text: #a07408;\n" +
+  "  --coop-pipe-box: #efebe1;\n" +
+  "  --coop-pipe-box-line: #ddd5c4;\n" +
+  "  --coop-pipe-lbl: #6f6a60;\n" +
+  "  --coop-pipe-arrow: #c8c3b8;\n" +
+  "  color-scheme: light;\n";
+
+const DARK_VARS =
+  "  --coop-sky: #0e1728;\n" +
+  "  --coop-hud-bg: rgba(16,22,36,0.85);\n" +
+  "  --coop-hud-fg: #e8ecf5;\n" +
+  "  --coop-empty-fg: rgba(214,226,240,0.9);\n" +
+  "  --coop-scrim: rgba(4,8,16,0.6);\n" +
+  "  --coop-panel: #262119;\n" +
+  "  --coop-panel-fg: #ece5d8;\n" +
+  "  --coop-line: #3b3327;\n" +
+  "  --coop-hover: #3a3226;\n" +
+  "  --coop-fg-dim: #b0a695;\n" +
+  "  --coop-fg-mut: #a1988a;\n" +
+  "  --coop-fg-soft: #c4bbab;\n" +
+  "  --coop-inset: #2f2921;\n" +
+  "  --coop-inset-line: #453b2b;\n" +
+  "  --coop-dash-line: #4a4030;\n" +
+  "  --coop-chip-bg: #3a3226;\n" +
+  "  --coop-chip-fg: #cfc3a9;\n" +
+  "  --coop-code-bg: #352e22;\n" +
+  "  --coop-field-bg: #1d1913;\n" +
+  "  --coop-field-line: #4c4130;\n" +
+  "  --coop-field-hover: #322b20;\n" +
+  "  --coop-checked-bg: #3f351d;\n" +
+  "  --coop-ghost-line: #554936;\n" +
+  "  --coop-err: #ff9b85;\n" +
+  "  --coop-accent-text: #e0a52c;\n" +
+  "  --coop-pipe-box: #3a332a;\n" +
+  "  --coop-pipe-box-line: #544b3d;\n" +
+  "  --coop-pipe-lbl: #b5ad9e;\n" +
+  "  --coop-pipe-arrow: #6a6152;\n" +
+  "  color-scheme: dark;\n";
+
 export function buildPage(): string {
   return (
     "<!doctype html>\n" +
@@ -13,15 +83,32 @@ export function buildPage(): string {
     '<meta charset="utf-8" />\n' +
     '<meta name="viewport" content="width=device-width, initial-scale=1" />\n' +
     "<title>Chicken Coop</title>\n" +
+    "<script>\n" +
+    "// Host theme stamp, before first paint: explicit ?theme= wins over the\n" +
+    "// OS preference; absent (auto), prefers-color-scheme rules below decide.\n" +
+    'const t = new URLSearchParams(location.search).get("theme");\n' +
+    'if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;\n' +
+    "</script>\n" +
     "<style>\n" +
-    "  html, body { margin: 0; height: 100%; overflow: hidden; background: #87b5d8; }\n" +
+    ":root {\n" +
+    LIGHT_VARS +
+    "}\n" +
+    ':root[data-theme="dark"] {\n' +
+    DARK_VARS +
+    "}\n" +
+    "@media (prefers-color-scheme: dark) {\n" +
+    '  :root:not([data-theme="light"]) {\n' +
+    DARK_VARS +
+    "  }\n" +
+    "}\n" +
+    "  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--coop-sky); }\n" +
     "  #stage { position: fixed; inset: 0; }\n" +
     "  #hud { position: fixed; top: 10px; left: 12px; padding: 6px 10px;\n" +
-    "    background: rgba(255,255,255,0.82); border-radius: 8px;\n" +
-    "    font: 13px/1.4 system-ui, sans-serif; color: #333; pointer-events: none; }\n" +
+    "    background: var(--coop-hud-bg); border-radius: 8px;\n" +
+    "    font: 13px/1.4 system-ui, sans-serif; color: var(--coop-hud-fg); pointer-events: none; }\n" +
     "  #empty { position: fixed; inset: 0; display: none; align-items: center;\n" +
     "    justify-content: center; pointer-events: none;\n" +
-    "    font: 15px system-ui, sans-serif; color: rgba(40,60,40,0.75); }\n" +
+    "    font: 15px system-ui, sans-serif; color: var(--coop-empty-fg); }\n" +
     "  #coop-mirror { display: none; }\n" +
     "</style>\n" +
     "</head>\n" +

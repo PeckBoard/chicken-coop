@@ -376,8 +376,8 @@ const sound = (() => {
   b.title = "Toggle sound";
   b.style.cssText =
     "position:fixed;right:12px;bottom:12px;z-index:20;width:34px;height:34px;" +
-    "border:none;border-radius:8px;background:rgba(255,255,255,0.82);" +
-    "font:16px system-ui,sans-serif;color:#333;cursor:pointer;";
+    "border:none;border-radius:8px;background:var(--coop-hud-bg);" +
+    "font:16px system-ui,sans-serif;color:var(--coop-hud-fg);cursor:pointer;";
   const paint = () => {
     b.textContent = sound.isMuted() ? "🔇" : "🔊";
     b.setAttribute("data-muted", sound.isMuted() ? "1" : "0");
@@ -473,8 +473,34 @@ const HOUR_OVERRIDE = (() => {
   }
 })();
 
+// Host theme: an explicit ?theme= stamp (set on <html> before first paint by
+// the page shell) wins; with no stamp the OS preference decides. Dark pins
+// the scene to deep night; light and "no signal" leave the clock-driven
+// cycle alone. ?hour= still beats both — it exists for demos and tests.
+const darkPref = (() => {
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)");
+  } catch (e) {
+    return null;
+  }
+})();
+
+function themeIsDark() {
+  const t = document.documentElement.dataset.theme;
+  if (t === "dark") return true;
+  if (t === "light") return false;
+  return !!(darkPref && darkPref.matches);
+}
+
+if (darkPref && darkPref.addEventListener) {
+  // Auto mode: an OS scheme flip re-colors the scene without a reload, even
+  // while the render loop is parked (hidden tab / headless fallback).
+  darkPref.addEventListener("change", () => updateDayNight());
+}
+
 function localHour() {
   if (HOUR_OVERRIDE !== null) return HOUR_OVERRIDE;
+  if (themeIsDark()) return 23; // dark theme pins the scene to night
   const d = new Date();
   return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
 }
@@ -3408,10 +3434,8 @@ function pipelineSvg(phase) {
         x +
         '" y="8" rx="9" width="' +
         w +
-        '" height="30" fill="' +
-        (isHot ? "#f5a623" : "#efebe1") +
-        '" stroke="' +
-        (isHot ? "#b97a10" : "#ddd5c4") +
+        '" height="30" class="coop-pipe-box' +
+        (isHot ? " coop-hot" : "") +
         '"/>',
     );
     parts.push(
@@ -3419,8 +3443,8 @@ function pipelineSvg(phase) {
         (x + w / 2) +
         '" y="28" text-anchor="middle" font-size="13" font-weight="' +
         (isHot ? "700" : "500") +
-        '" fill="' +
-        (isHot ? "#3a2a08" : "#6f6a60") +
+        '" class="coop-pipe-lbl' +
+        (isHot ? " coop-hot" : "") +
         '" font-family="system-ui, sans-serif">' +
         labels[i] +
         "</text>",
@@ -3431,7 +3455,7 @@ function pipelineSvg(phase) {
           (x + w + 3) +
           " 23 l " +
           (gap - 7) +
-          ' 0" stroke="#c8c3b8" stroke-width="2" marker-end="url(#coop-arr)"/>',
+          ' 0" class="coop-pipe-arrow" stroke-width="2" marker-end="url(#coop-arr)"/>',
       );
     }
     x += w + gap;
@@ -3439,13 +3463,13 @@ function pipelineSvg(phase) {
   parts.push(
     '<text x="' +
       (4 + hot * (w + gap) + w / 2) +
-      '" y="56" text-anchor="middle" font-size="11" fill="#a07408" font-family="system-ui, sans-serif">this hen is here</text>',
+      '" y="56" text-anchor="middle" font-size="11" class="coop-pipe-here" font-family="system-ui, sans-serif">this hen is here</text>',
   );
   return (
     '<svg viewBox="0 0 ' +
     (x - gap + 8) +
     ' 62" width="100%" role="img" aria-label="card workflow position">' +
-    '<defs><marker id="coop-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#c8c3b8"/></marker></defs>' +
+    '<defs><marker id="coop-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" class="coop-pipe-mark"/></marker></defs>' +
     parts.join("") +
     "</svg>"
   );
@@ -3455,46 +3479,53 @@ let modalEl = null;
 let modalCtx = null; // { chicken, q, questions }
 
 const MODAL_CSS =
-  "#coop-modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(24,30,20,0.45);z-index:50;font:14px/1.5 system-ui,sans-serif}" +
+  "#coop-modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--coop-scrim);z-index:50;font:14px/1.5 system-ui,sans-serif}" +
   "#coop-modal[hidden]{display:none}" +
-  ".coop-modal-panel{width:min(600px,calc(100vw - 48px));max-height:min(82vh,720px);display:flex;flex-direction:column;background:#fdfbf7;color:#2f2a26;border-radius:14px;box-shadow:0 18px 50px rgba(20,16,8,0.35);overflow:hidden}" +
-  ".coop-modal-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid #eee7da}" +
+  ".coop-modal-panel{width:min(600px,calc(100vw - 48px));max-height:min(82vh,720px);display:flex;flex-direction:column;background:var(--coop-panel);color:var(--coop-panel-fg);border-radius:14px;box-shadow:0 18px 50px rgba(20,16,8,0.35);overflow:hidden}" +
+  ".coop-modal-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--coop-line)}" +
   ".coop-modal-dot{width:26px;height:26px;border-radius:50%;background:#f5a623;color:#3a2a08;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none}" +
   ".coop-modal-title{font-weight:650;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-  ".coop-modal-close{border:0;background:none;font-size:20px;line-height:1;color:#8a8378;cursor:pointer;padding:4px 8px;border-radius:8px}" +
-  ".coop-modal-close:hover{background:#f0ebe0;color:#2f2a26}" +
+  ".coop-modal-close{border:0;background:none;font-size:20px;line-height:1;color:var(--coop-fg-mut);cursor:pointer;padding:4px 8px;border-radius:8px}" +
+  ".coop-modal-close:hover{background:var(--coop-hover);color:var(--coop-panel-fg)}" +
   ".coop-modal-body{padding:14px 18px;overflow-y:auto}" +
-  ".coop-ctx{background:#f6f1e7;border:1px solid #eadfc9;border-radius:10px;padding:10px 12px;margin-bottom:14px}" +
+  ".coop-ctx{background:var(--coop-inset);border:1px solid var(--coop-inset-line);border-radius:10px;padding:10px 12px;margin-bottom:14px}" +
   ".coop-ctx-title{font-weight:650;margin-bottom:2px}" +
-  ".coop-ctx-meta{color:#7a7168;font-size:12.5px;font-weight:400}" +
+  ".coop-ctx-meta{color:var(--coop-fg-dim);font-size:12.5px;font-weight:400}" +
   ".coop-ctx svg{display:block;margin:8px 0 2px}" +
-  ".coop-ctx-desc{margin-top:8px;border-top:1px dashed #e0d5bd;padding-top:8px}" +
-  ".coop-ctx-desc summary{cursor:pointer;color:#7a7168;font-size:12.5px}" +
+  ".coop-ctx-desc{margin-top:8px;border-top:1px dashed var(--coop-dash-line);padding-top:8px}" +
+  ".coop-ctx-desc summary{cursor:pointer;color:var(--coop-fg-dim);font-size:12.5px}" +
   ".coop-ctx-desc p{margin:6px 0 0}" +
   ".coop-q{margin-bottom:16px}" +
-  ".coop-q-head{display:inline-block;background:#efe7d6;color:#6f6350;font-size:11.5px;font-weight:650;letter-spacing:0.4px;text-transform:uppercase;border-radius:6px;padding:2px 8px;margin-bottom:6px}" +
+  ".coop-q-head{display:inline-block;background:var(--coop-chip-bg);color:var(--coop-chip-fg);font-size:11.5px;font-weight:650;letter-spacing:0.4px;text-transform:uppercase;border-radius:6px;padding:2px 8px;margin-bottom:6px}" +
   ".coop-q-text p{margin:0 0 6px}" +
-  ".coop-code{background:#efe9dc;border-radius:8px;padding:8px 10px;overflow-x:auto;margin:6px 0;font-size:12.5px}" +
+  ".coop-code{background:var(--coop-code-bg);border-radius:8px;padding:8px 10px;overflow-x:auto;margin:6px 0;font-size:12.5px}" +
   ".coop-code code,.coop-q-text code,.coop-ctx code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}" +
-  ".coop-q-text code,.coop-ctx code{background:#efe9dc;border-radius:5px;padding:1px 4px}" +
-  ".coop-opt{display:flex;gap:8px;align-items:baseline;padding:8px 10px;border:1px solid #e6ddca;border-radius:10px;margin:6px 0;cursor:pointer;transition:border-color 0.12s,background 0.12s}" +
-  ".coop-opt:hover{background:#faf5ea}" +
-  ".coop-opt:has(input:checked){border-color:#d99a1e;background:#fdf4e0}" +
+  ".coop-q-text code,.coop-ctx code{background:var(--coop-code-bg);border-radius:5px;padding:1px 4px}" +
+  ".coop-opt{display:flex;gap:8px;align-items:baseline;padding:8px 10px;border:1px solid var(--coop-field-line);border-radius:10px;margin:6px 0;cursor:pointer;transition:border-color 0.12s,background 0.12s}" +
+  ".coop-opt:hover{background:var(--coop-field-hover)}" +
+  ".coop-opt:has(input:checked){border-color:#d99a1e;background:var(--coop-checked-bg)}" +
   ".coop-opt input{accent-color:#b97a10}" +
   ".coop-opt-label{font-weight:600}" +
-  ".coop-opt-desc{color:#7a7168;font-size:12.5px}" +
-  ".coop-free{width:100%;box-sizing:border-box;margin-top:6px;padding:8px 10px;border:1px solid #e6ddca;border-radius:10px;font:inherit;background:#fff}" +
+  ".coop-opt-desc{color:var(--coop-fg-dim);font-size:12.5px}" +
+  ".coop-free{width:100%;box-sizing:border-box;margin-top:6px;padding:8px 10px;border:1px solid var(--coop-field-line);border-radius:10px;font:inherit;background:var(--coop-field-bg);color:var(--coop-panel-fg)}" +
   ".coop-free:focus{outline:2px solid #e9c470;border-color:#d99a1e}" +
-  ".coop-modal-foot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid #eee7da}" +
-  ".coop-modal-err{color:#b3402a;font-size:12.5px;flex:1}" +
+  ".coop-modal-foot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--coop-line)}" +
+  ".coop-modal-err{color:var(--coop-err);font-size:12.5px;flex:1}" +
   ".coop-btn{border:0;border-radius:10px;padding:9px 16px;font:600 13.5px system-ui,sans-serif;cursor:pointer}" +
   ".coop-btn[disabled]{opacity:0.55;cursor:default}" +
   ".coop-btn-primary{background:#b97a10;color:#fff}" +
   ".coop-btn-primary:not([disabled]):hover{background:#a06a0c}" +
-  ".coop-btn-ghost{background:none;color:#7a7168;border:1px solid #ddd3c0}" +
-  ".coop-btn-ghost:hover{background:#f0ebe0}" +
+  ".coop-btn-ghost{background:none;color:var(--coop-fg-dim);border:1px solid var(--coop-ghost-line)}" +
+  ".coop-btn-ghost:hover{background:var(--coop-hover)}" +
   ".coop-gap{height:6px}" +
-  ".coop-ul{margin:4px 0 8px;padding-left:20px}";
+  ".coop-ul{margin:4px 0 8px;padding-left:20px}" +
+  ".coop-pipe-box{fill:var(--coop-pipe-box);stroke:var(--coop-pipe-box-line)}" +
+  ".coop-pipe-box.coop-hot{fill:#f5a623;stroke:#b97a10}" +
+  ".coop-pipe-lbl{fill:var(--coop-pipe-lbl)}" +
+  ".coop-pipe-lbl.coop-hot{fill:#3a2a08}" +
+  ".coop-pipe-arrow{stroke:var(--coop-pipe-arrow)}" +
+  ".coop-pipe-mark{fill:var(--coop-pipe-arrow)}" +
+  ".coop-pipe-here{fill:var(--coop-accent-text)}";
 
 function ensureModalDom() {
   if (modalEl) return modalEl;
@@ -3772,19 +3803,19 @@ function openQuestionModal(chicken) {
 // ── Info popover: click any bird for identity + status at a glance ────
 
 const POP_CSS =
-  "#coop-pop{position:fixed;z-index:40;width:232px;background:#fdfbf7;color:#2f2a26;" +
-  "border:1px solid #e6ddca;border-radius:12px;box-shadow:0 10px 30px rgba(20,16,8,0.28);" +
+  "#coop-pop{position:fixed;z-index:40;width:232px;background:var(--coop-panel);color:var(--coop-panel-fg);" +
+  "border:1px solid var(--coop-field-line);border-radius:12px;box-shadow:0 10px 30px rgba(20,16,8,0.28);" +
   "font:13px/1.45 system-ui,sans-serif;padding:10px 12px;opacity:0;transform:translateY(4px);" +
   "transition:opacity 0.14s ease,transform 0.14s ease}" +
   "#coop-pop.coop-pop-in{opacity:1;transform:translateY(0)}" +
   "#coop-pop[hidden]{display:none}" +
   ".coop-pop-name{font-weight:650;font-size:14px;margin-right:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-  ".coop-pop-breed{color:#a07408;font-size:11.5px;font-weight:650;letter-spacing:0.3px;text-transform:uppercase;margin:1px 0 6px}" +
-  ".coop-pop-row{display:flex;gap:8px;margin:2px 0;color:#5c554c}" +
-  ".coop-pop-k{flex:none;width:60px;color:#8a8378;font-size:12px}" +
+  ".coop-pop-breed{color:var(--coop-accent-text);font-size:11.5px;font-weight:650;letter-spacing:0.3px;text-transform:uppercase;margin:1px 0 6px}" +
+  ".coop-pop-row{display:flex;gap:8px;margin:2px 0;color:var(--coop-fg-soft)}" +
+  ".coop-pop-k{flex:none;width:60px;color:var(--coop-fg-mut);font-size:12px}" +
   ".coop-pop-v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-  ".coop-pop-x{position:absolute;top:6px;right:6px;border:0;background:none;color:#8a8378;font-size:16px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:6px}" +
-  ".coop-pop-x:hover{background:#f0ebe0;color:#2f2a26}";
+  ".coop-pop-x{position:absolute;top:6px;right:6px;border:0;background:none;color:var(--coop-fg-mut);font-size:16px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:6px}" +
+  ".coop-pop-x:hover{background:var(--coop-hover);color:var(--coop-panel-fg)}";
 
 let popEl = null;
 
@@ -4022,8 +4053,8 @@ const camBtn = (() => {
   b.style.cssText =
     "position:fixed;right:54px;bottom:12px;z-index:20;height:34px;" +
     "padding:0 10px;border:none;border-radius:8px;" +
-    "background:rgba(255,255,255,0.82);font:13px system-ui,sans-serif;" +
-    "color:#333;cursor:pointer;";
+    "background:var(--coop-hud-bg);font:13px system-ui,sans-serif;" +
+    "color:var(--coop-hud-fg);cursor:pointer;";
   const paintCam = () => {
     b.textContent = CAM_LABEL[camMode];
     b.setAttribute("data-mode", camMode);
